@@ -77,6 +77,20 @@ function broadcastTelemetry(data) {
     });
 }
 
+// Broadcast config update to all connected WebSocket clients
+function broadcastConfig() {
+    const message = JSON.stringify({
+        type: 'config',
+        data: { video_delay_ms: VIDEO_DELAY_MS }
+    });
+    wsClients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+        }
+    });
+    log('Config broadcast to', wsClients.size, 'clients');
+}
+
 // Session management
 let currentSession = null;
 let sessionData = [];
@@ -234,6 +248,10 @@ app.post('/config', (req, res) => {
         if (!isNaN(newDelay) && newDelay >= 0 && newDelay <= 10000) {
             VIDEO_DELAY_MS = newDelay;
             console.log(`Video delay updated to ${VIDEO_DELAY_MS}ms`);
+
+            // Broadcast config change to all connected overlays
+            broadcastConfig();
+
             res.json({
                 status: 'ok',
                 video_delay_ms: VIDEO_DELAY_MS

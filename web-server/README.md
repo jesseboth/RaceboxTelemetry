@@ -288,12 +288,24 @@ http://localhost:5000?delay=2500
 
 ### Finding Your Delay
 
-1. Start your RTMP stream and overlay
-2. Do something visible (like hitting the brakes hard)
-3. Watch for when the G-force meter reacts vs. when you see it in OBS
-4. Adjust the delay until they match:
-   - If overlay reacts BEFORE video → increase delay
-   - If overlay reacts AFTER video → decrease delay
+**Method 1: Admin Page (Recommended)**
+1. Open `http://YOUR_SERVER:5000/admin` in a browser
+2. Start your RTMP stream and add overlay as OBS browser source
+3. Hard brake while driving
+4. Use the slider to adjust delay until video and overlay sync
+5. Changes apply instantly to all overlays - no refresh needed!
+
+**Method 2: URL Parameter (Testing)**
+```
+http://localhost:5000?delay=2500
+```
+
+**Method 3: Environment Variable (Permanent)**
+```bash
+VIDEO_DELAY_MS=2000 npm start
+# or
+./docker.sh --delay 2000 daemon
+```
 
 Typical delays:
 - Local RTMP: 1000-1500ms
@@ -332,11 +344,12 @@ The overlay uses WebSocket for real-time updates and automatically buffers telem
 
 Access the admin page at `/admin` to:
 - **Adjust video delay** - Real-time slider to sync overlay with stream (0-5000ms)
+- **Live updates** - All connected overlays update instantly via WebSocket (no refresh needed)
 - **View server status** - Session info, data points, uptime
 - **Get overlay URL** - Easy copy/paste for OBS browser source
 - **See tips** - Instructions for finding the right delay value
 
-Perfect for stream moderators who need to adjust sync without restarting the server or changing code.
+Perfect for stream moderators who need to adjust sync on-the-fly without restarting the server, refreshing overlays, or changing code. When you adjust the delay, all active overlays update immediately.
 
 ## Development
 

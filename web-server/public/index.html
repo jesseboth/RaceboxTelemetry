@@ -450,6 +450,13 @@
                     if (message.type === 'telemetry') {
                         // Buffer the data instead of displaying immediately
                         bufferTelemetry(message.data);
+                    } else if (message.type === 'config') {
+                        // Config updated - apply new delay immediately
+                        const newDelay = message.data.video_delay_ms;
+                        if (newDelay !== undefined && newDelay !== serverDelay) {
+                            serverDelay = newDelay;
+                            console.log(`Delay updated to ${serverDelay}ms (live update from server)`);
+                        }
                     }
                 } catch (error) {
                     console.error('Failed to parse WebSocket message:', error);

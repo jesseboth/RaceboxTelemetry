@@ -245,6 +245,9 @@
 
         <div class="card">
             <h2>Video Stream Delay</h2>
+            <p style="color: #00c3ff; font-size: 13px; margin-bottom: 12px; font-weight: bold;">
+                ⚡ Live Updates - All overlays update instantly when you click Save (no refresh needed)
+            </p>
             <div class="setting-row">
                 <label>Current Delay</label>
                 <div class="delay-value">
@@ -403,7 +406,7 @@
 
                 if (response.ok) {
                     currentDelay = newDelay;
-                    showStatus(`Delay updated to ${newDelay}ms - all overlays will use this value`, 'success');
+                    showStatus(`✓ Delay updated to ${newDelay}ms - all overlays updated instantly (no refresh needed)`, 'success');
                 } else {
                     showStatus(`Error: ${result.message}`, 'error');
                 }

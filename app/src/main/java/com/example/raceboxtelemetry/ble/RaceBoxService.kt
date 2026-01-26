@@ -13,7 +13,6 @@ import com.example.raceboxtelemetry.model.TelemetryData
 import com.example.raceboxtelemetry.preferences.DataFieldPreferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
-import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.min
 
 class RaceBoxService : Service() {
@@ -29,6 +28,7 @@ class RaceBoxService : Service() {
     private val binder = LocalBinder()
     private lateinit var raceBoxManager: RaceBoxManager
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private lateinit var prefs: DataFieldPreferences
 
     private var dataSendingJob: Job? = null
     private var lastSentTime = 0L
@@ -42,6 +42,7 @@ class RaceBoxService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        prefs = DataFieldPreferences(this)
         raceBoxManager = RaceBoxManager(this)
         createNotificationChannel()
         Log.d(TAG, "Service created")
@@ -72,7 +73,6 @@ class RaceBoxService : Service() {
         Log.d(TAG, "Starting data collection")
         dataSendingJob = serviceScope.launch {
             raceBoxManager.telemetryData.collectLatest { data ->
-                val prefs = DataFieldPreferences(this@RaceBoxService)
                 val sendIntervalMs = prefs.sendIntervalMs
 
                 Log.d(TAG, "Received telemetry data: Speed=${data.speed}, interval=${sendIntervalMs}ms")
@@ -142,8 +142,6 @@ class RaceBoxService : Service() {
 
         isSending = true
         try {
-            val prefs = DataFieldPreferences(this)
-
             // Only include fields that are enabled in preferences
             val telemetry = TelemetryData(
                 speed = if (prefs.sendSpeed) data.speed else null,

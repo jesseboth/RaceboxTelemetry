@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var raceBoxService: RaceBoxService? = null
     private var raceBoxManager: RaceBoxManager? = null
     private var serviceBound = false
+    private lateinit var prefs: DataFieldPreferences
 
     private val deviceAdapter = DeviceAdapter { device ->
         raceBoxManager?.connect(device)
@@ -109,6 +110,9 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
+        // Initialize preferences once
+        prefs = DataFieldPreferences(this)
+
         initializeViews()
         setupClickListeners()
         checkPermissions()
@@ -136,7 +140,6 @@ class MainActivity : AppCompatActivity() {
         devicesRecyclerView.adapter = deviceAdapter
 
         // Load saved API URL from preferences and apply it
-        val prefs = DataFieldPreferences(this)
         val savedUrl = prefs.apiUrl
         apiUrlInput.setText(savedUrl)
         TelemetryApi.setBaseUrl(savedUrl)
@@ -171,7 +174,6 @@ class MainActivity : AppCompatActivity() {
         val url = apiUrlInput.text.toString().trim()
         if (url.isNotEmpty()) {
             // Save to preferences
-            val prefs = DataFieldPreferences(this)
             prefs.apiUrl = url
 
             // Apply to API
@@ -258,15 +260,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateFieldVisibility() {
-        val prefs = DataFieldPreferences(this)
-
-        speedText.visibility = if (prefs.sendSpeed) View.VISIBLE else View.GONE
-        gLatText.visibility = if (prefs.sendGLat) View.VISIBLE else View.GONE
-        gLongText.visibility = if (prefs.sendGLong) View.VISIBLE else View.GONE
-        latitudeText.visibility = if (prefs.sendLatitude) View.VISIBLE else View.GONE
-        longitudeText.visibility = if (prefs.sendLongitude) View.VISIBLE else View.GONE
-        satellitesText.visibility = if (prefs.sendSatellites) View.VISIBLE else View.GONE
-        timestampText.visibility = if (prefs.sendTimestamp) View.VISIBLE else View.GONE
+        val fields = mapOf(
+            speedText to prefs.sendSpeed,
+            gLatText to prefs.sendGLat,
+            gLongText to prefs.sendGLong,
+            latitudeText to prefs.sendLatitude,
+            longitudeText to prefs.sendLongitude,
+            satellitesText to prefs.sendSatellites,
+            timestampText to prefs.sendTimestamp
+        )
+        fields.forEach { (view, enabled) ->
+            view.visibility = if (enabled) View.VISIBLE else View.GONE
+        }
     }
 
     private fun checkPermissions() {
@@ -312,7 +317,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDataFieldsDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_data_fields, null)
-        val prefs = DataFieldPreferences(this)
 
         // Get checkboxes
         val checkboxSpeed = dialogView.findViewById<CheckBox>(R.id.checkboxSpeed)
@@ -328,13 +332,16 @@ class MainActivity : AppCompatActivity() {
         val frequencyLabel = dialogView.findViewById<TextView>(R.id.frequencyLabel)
 
         // Set current values
-        checkboxSpeed.isChecked = prefs.sendSpeed
-        checkboxGLat.isChecked = prefs.sendGLat
-        checkboxGLong.isChecked = prefs.sendGLong
-        checkboxLatitude.isChecked = prefs.sendLatitude
-        checkboxLongitude.isChecked = prefs.sendLongitude
-        checkboxSatellites.isChecked = prefs.sendSatellites
-        checkboxTimestamp.isChecked = prefs.sendTimestamp
+        val checkboxes = mapOf(
+            checkboxSpeed to prefs.sendSpeed,
+            checkboxGLat to prefs.sendGLat,
+            checkboxGLong to prefs.sendGLong,
+            checkboxLatitude to prefs.sendLatitude,
+            checkboxLongitude to prefs.sendLongitude,
+            checkboxSatellites to prefs.sendSatellites,
+            checkboxTimestamp to prefs.sendTimestamp
+        )
+        checkboxes.forEach { (checkbox, value) -> checkbox.isChecked = value }
 
         // Set frequency slider from current preference
         val currentFrequency = prefs.getFrequencyHz()
@@ -388,9 +395,13 @@ class MainActivity : AppCompatActivity() {
         label.text = "$delayMs ms (%.1f seconds)".format(seconds)
     }
 
+    // Generic label updater for slider values
+    private fun updateSliderLabel(label: TextView, value: Int, formatter: (Int) -> String) {
+        label.text = formatter(value)
+    }
+
     private fun showStreamDelayDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_stream_delay, null)
-        val prefs = DataFieldPreferences(this)
 
         // Get video delay slider and label
         val videoDelaySlider = dialogView.findViewById<Slider>(R.id.videoDelaySlider)
