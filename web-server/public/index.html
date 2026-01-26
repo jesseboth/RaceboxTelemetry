@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RaceBox Telemetry Overlay</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            background: transparent;
+            color: white;
+        }
+
+        .data-display {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(14, 14, 14, 0.9);
+            color: white;
+            padding: 19px 24px;
+            border-radius: 8px;
+            border: 3px solid #007BFF;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            min-width: 300px;
+            transition: background-color 0.3s ease;
+        }
+
+        .status-dot {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #dc3545;
+            box-shadow: 0 0 8px rgba(220, 53, 69, 0.6);
+            transition: all 0.3s ease;
+        }
+
+        .status-dot.good {
+            background: #28a745;
+            box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+        }
+
+        .status-dot.synced {
+            background: #00c3ff;
+            box-shadow: 0 0 8px rgba(0, 195, 255, 0.6);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 0 0 8px rgba(0, 195, 255, 0.6);
+                transform: scale(1);
+            }
+            50% {
+                box-shadow: 0 0 15px rgba(0, 195, 255, 0.9);
+                transform: scale(1.1);
+            }
+        }
+
+        .status-dot.offline {
+            background: #dc3545;
+            box-shadow: 0 0 8px rgba(220, 53, 69, 0.6);
+        }
+
+        .speed-section {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 72px;
+        }
+
+        .speed-value {
+            font-size: 43px;
+            font-weight: bold;
+            width: 72px;
+        }
+
+        .speed-label {
+            font-size: 17px;
+            font-weight: normal;
+            color: #aaaaaa;
+            margin-top: 5px;
+        }
+
+        .g-force-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .g-force-title {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+
+        .g-force-circle {
+            position: relative;
+            width: 144px;
+            height: 144px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .g-force-dot {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: #22c55e;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.1s ease;
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+            left: 50%;
+            top: 50%;
+        }
+
+        .g-force-dot.high {
+            background: #f59e0b;
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+        }
+
+        .g-force-dot.extreme {
+            background: #ef4444;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+        }
+
+        .g-force-crosshairs {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .g-force-crosshairs::before,
+        .g-force-crosshairs::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .g-force-crosshairs::before {
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 1px;
+            transform: translateY(-50%);
+        }
+
+        .g-force-crosshairs::after {
+            left: 50%;
+            top: 0;
+            width: 1px;
+            height: 100%;
+            transform: translateX(-50%);
+        }
+
+        .g-force-labels {
+            display: flex;
+            justify-content: space-between;
+            width: 144px;
+            font-size: 12px;
+            color: #aaaaaa;
+            margin-top: 5px;
+        }
+
+        .g-force-max {
+            font-size: 12px;
+            color: #aaaaaa;
+            text-align: center;
+            margin-top: 5px;
+        }
+
+        /* Debug info */
+        .debug {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(14, 14, 14, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            padding: 8px 12px;
+            font-size: 10px;
+            color: #aaaaaa;
+            font-family: monospace;
+        }
+
+        .debug.hidden {
+            display: none;
+        }
+
+        /* Mobile optimizations */
+        @media (max-width: 768px) {
+            .data-display {
+                bottom: 10px;
+                right: 10px;
+                padding: 12px 16px;
+                gap: 15px;
+            }
+
+            .speed-value {
+                font-size: 28px;
+            }
+
+            .g-force-circle {
+                width: 100px;
+                height: 100px;
+            }
+
+            .g-force-labels {
+                width: 100px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="data-display">
+        <div class="status-dot offline" id="statusDot"></div>
+
+        <div class="speed-section">
+            <div class="speed-value" id="speedValue">--</div>
+            <div class="speed-label">mph</div>
+        </div>
+
+        <div class="g-force-section">
+            <div class="g-force-circle">
+                <div class="g-force-crosshairs"></div>
+                <div class="g-force-dot" id="gForceDot"></div>
+            </div>
+            <div class="g-force-labels">
+                <span>-2g</span>
+                <span>0</span>
+                <span>+2g</span>
+            </div>
+            <div class="g-force-max" id="maxGForce">Max: 0.0g</div>
+        </div>
+    </div>
+
+    <!-- Debug info - remove or hide for production -->
+    <div class="debug hidden" id="debug">
+        Delay: --ms | Buffer: --
+    </div>
+
+    <script>
+        // Auto-detect server URL (since overlay is served by the same server)
+        const API_URL = window.location.origin;
+        const WS_URL = `ws://${window.location.host}`;
+        const MAX_G_FORCE = 2.0; // Maximum g-force to display on the meter
+        const KMH_TO_MPH = 0.621371;
+
+        let errorCount = 0;
+        const MAX_ERRORS = 5;
+        let serverDelay = 1500;
+        let maxGForce = 0;
+        let ws = null;
+        let reconnectTimeout = null;
+        let displayInterval = null;
+
+        // Telemetry buffer for delay sync
+        const telemetryBuffer = [];
+        const MAX_BUFFER_SIZE = 500; // Keep ~10 seconds of data at 50Hz
+
+        // Load server configuration
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_URL}/config`);
+                const config = await response.json();
+                serverDelay = config.video_delay_ms;
+
+                // Allow URL parameter to override delay for testing
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.has('delay')) {
+                    const customDelay = parseInt(urlParams.get('delay'));
+                    if (!isNaN(customDelay) && customDelay >= 0) {
+                        serverDelay = customDelay;
+                        console.log(`Using custom delay from URL: ${serverDelay}ms`);
+                    }
+                } else {
+                    console.log(`Loaded config: ${serverDelay}ms video delay`);
+                }
+            } catch (e) {
+                console.error('Failed to load config:', e);
+            }
+        }
+
+        function getGForceClass(totalG) {
+            if (totalG > 1.5) return ' extreme';
+            if (totalG > 0.8) return ' high';
+            return '';
+        }
+
+        function updateGForceDisplay(gLat, gLong, speed) {
+            const dot = document.getElementById('gForceDot');
+            const radius = 66; // Half of 144px - 6px (half dot size)
+
+            // When stationary (speed = 0), keep dot centered
+            if (speed === 0) {
+                dot.style.left = '50%';
+                dot.style.top = '50%';
+                dot.className = 'g-force-dot';
+                return;
+            }
+
+            // Calculate dot position
+            // Lateral: positive = right, negative = left
+            // Longitudinal: positive = forward (up), negative = brake (down)
+            const x = Math.max(-MAX_G_FORCE, Math.min(MAX_G_FORCE, gLat)) / MAX_G_FORCE * radius;
+            const y = Math.max(-MAX_G_FORCE, Math.min(MAX_G_FORCE, -gLong)) / MAX_G_FORCE * radius;
+
+            // Position dot (50% = center)
+            dot.style.left = `${50 + (x / radius) * 50}%`;
+            dot.style.top = `${50 + (y / radius) * 50}%`;
+
+            // Calculate total G-force
+            const totalG = Math.sqrt(gLat * gLat + gLong * gLong);
+
+            // Update max G-force
+            if (totalG > maxGForce) {
+                maxGForce = totalG;
+                document.getElementById('maxGForce').textContent = `Max: ${maxGForce.toFixed(1)}g`;
+            }
+
+            // Color dot based on G-force intensity
+            dot.className = 'g-force-dot' + getGForceClass(totalG);
+        }
+
+        function updateOverlay(data) {
+            // Update speed (convert km/h to mph)
+            const speedKmh = data.speed || 0;
+            const speedMph = speedKmh * KMH_TO_MPH;
+            document.getElementById('speedValue').textContent = Math.round(speedMph);
+
+            // Update g-forces
+            const gLat = data.g_lat || 0;
+            const gLong = data.g_long || 0;
+
+            // Update G-force display
+            updateGForceDisplay(gLat, gLong, speedKmh);
+
+            // Update status indicator
+            const statusEl = document.getElementById('statusDot');
+            statusEl.className = 'status-dot synced';
+            errorCount = 0;
+        }
+
+        // Add telemetry to buffer with timestamp
+        function bufferTelemetry(data) {
+            const bufferedData = {
+                ...data,
+                _receivedAt: Date.now()
+            };
+
+            telemetryBuffer.push(bufferedData);
+
+            // Keep buffer size manageable
+            if (telemetryBuffer.length > MAX_BUFFER_SIZE) {
+                telemetryBuffer.shift();
+            }
+        }
+
+        // Display telemetry data that's serverDelay milliseconds old
+        function displayDelayedTelemetry() {
+            if (telemetryBuffer.length === 0) return;
+
+            const now = Date.now();
+            const targetTime = now - serverDelay;
+
+            // Find the data point closest to our target time
+            let closestIndex = -1;
+            let closestDiff = Infinity;
+
+            for (let i = telemetryBuffer.length - 1; i >= 0; i--) {
+                const diff = Math.abs(telemetryBuffer[i]._receivedAt - targetTime);
+                if (diff < closestDiff) {
+                    closestDiff = diff;
+                    closestIndex = i;
+                } else {
+                    // Times are getting older, we can stop
+                    break;
+                }
+            }
+
+            if (closestIndex !== -1) {
+                const data = telemetryBuffer[closestIndex];
+                updateOverlay(data);
+
+                // Clean up old data we've already displayed
+                telemetryBuffer.splice(0, closestIndex);
+            }
+        }
+
+        // Start displaying delayed telemetry
+        function startDelayedDisplay() {
+            if (displayInterval) {
+                clearInterval(displayInterval);
+            }
+            // Update display at 30fps
+            displayInterval = setInterval(displayDelayedTelemetry, 33);
+        }
+
+        // Stop displaying delayed telemetry
+        function stopDelayedDisplay() {
+            if (displayInterval) {
+                clearInterval(displayInterval);
+                displayInterval = null;
+            }
+            telemetryBuffer.length = 0; // Clear buffer
+        }
+
+        function connectWebSocket() {
+            console.log('Connecting to WebSocket:', WS_URL);
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                console.log(`Telemetry will be delayed by ${serverDelay}ms to sync with video`);
+                errorCount = 0;
+                const statusEl = document.getElementById('statusDot');
+                statusEl.className = 'status-dot good';
+
+                // Start delayed display
+                startDelayedDisplay();
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    if (message.type === 'telemetry') {
+                        // Buffer the data instead of displaying immediately
+                        bufferTelemetry(message.data);
+                    }
+                } catch (error) {
+                    console.error('Failed to parse WebSocket message:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                errorCount++;
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed, reconnecting in 2 seconds...');
+                const statusEl = document.getElementById('statusDot');
+                statusEl.className = 'status-dot offline';
+                document.getElementById('speedValue').textContent = '--';
+
+                // Center dot on disconnect
+                const dot = document.getElementById('gForceDot');
+                dot.style.left = '50%';
+                dot.style.top = '50%';
+                dot.className = 'g-force-dot';
+
+                // Stop delayed display
+                stopDelayedDisplay();
+
+                // Reconnect after delay
+                reconnectTimeout = setTimeout(connectWebSocket, 2000);
+            };
+        }
+
+        // Initialize
+        loadConfig().then(() => {
+            connectWebSocket();
+        });
+
+        console.log('RaceBox Telemetry Overlay initialized');
+        console.log(`Server: ${API_URL}`);
+        console.log(`WebSocket: ${WS_URL}`);
+        console.log(`Max G-Force display: ±${MAX_G_FORCE}G`);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopDelayedDisplay();
+            if (ws) {
+                ws.close();
+            }
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
+        });
+    </script>
+</body>
+</html>

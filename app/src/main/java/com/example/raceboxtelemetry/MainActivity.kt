@@ -1,0 +1,474 @@
+package com.example.raceboxtelemetry
+
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.os.IBinder
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.widget.CheckBox
+import android.widget.TextView
+import android.widget.Toast
+import com.google.android.material.slider.Slider
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.example.raceboxtelemetry.ble.RaceBoxManager
+import com.example.raceboxtelemetry.ble.RaceBoxService
+import com.example.raceboxtelemetry.api.TelemetryApi
+import com.example.raceboxtelemetry.preferences.DataFieldPreferences
+import com.example.raceboxtelemetry.ui.GForceMeterView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
+import com.google.android.material.textview.MaterialTextView
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var apiUrlLayout: TextInputLayout
+    private lateinit var apiUrlInput: TextInputEditText
+    private lateinit var scanButton: MaterialButton
+    private lateinit var disconnectButton: MaterialButton
+    private lateinit var zeroGMeterButton: MaterialButton
+    private lateinit var statusText: MaterialTextView
+    private lateinit var gForceMeter: GForceMeterView
+    private lateinit var speedText: MaterialTextView
+    private lateinit var gLatText: MaterialTextView
+    private lateinit var gLongText: MaterialTextView
+    private lateinit var latitudeText: MaterialTextView
+    private lateinit var longitudeText: MaterialTextView
+    private lateinit var satellitesText: MaterialTextView
+    private lateinit var timestampText: MaterialTextView
+    private lateinit var devicesRecyclerView: RecyclerView
+
+    private var raceBoxService: RaceBoxService? = null
+    private var raceBoxManager: RaceBoxManager? = null
+    private var serviceBound = false
+
+    private val deviceAdapter = DeviceAdapter { device ->
+        raceBoxManager?.connect(device)
+    }
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as RaceBoxService.LocalBinder
+            raceBoxService = binder.getService()
+            raceBoxManager = raceBoxService?.getRaceBoxManager()
+            serviceBound = true
+            observeTelemetry()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceBound = false
+            raceBoxService = null
+            raceBoxManager = null
+        }
+    }
+
+    private val requestPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            Toast.makeText(this, "Permissions granted", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Permissions required for BLE", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val enableBluetoothLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            Toast.makeText(this, "Bluetooth enabled", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Disable dynamic colors (Material You) - force our blue theme
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            setTheme(R.style.Theme_RaceBoxTelemetry)
+        }
+
+        setContentView(R.layout.activity_main)
+
+        initializeViews()
+        setupClickListeners()
+        checkPermissions()
+        startAndBindService()
+    }
+
+    private fun initializeViews() {
+        apiUrlLayout = findViewById(R.id.apiUrlLayout)
+        apiUrlInput = findViewById(R.id.apiUrlInput)
+        scanButton = findViewById(R.id.scanButton)
+        disconnectButton = findViewById(R.id.disconnectButton)
+        zeroGMeterButton = findViewById(R.id.zeroGMeterButton)
+        statusText = findViewById(R.id.statusText)
+        gForceMeter = findViewById(R.id.gForceMeter)
+        speedText = findViewById(R.id.speedText)
+        gLatText = findViewById(R.id.gLatText)
+        gLongText = findViewById(R.id.gLongText)
+        latitudeText = findViewById(R.id.latitudeText)
+        longitudeText = findViewById(R.id.longitudeText)
+        satellitesText = findViewById(R.id.satellitesText)
+        timestampText = findViewById(R.id.timestampText)
+        devicesRecyclerView = findViewById(R.id.devicesRecyclerView)
+
+        devicesRecyclerView.layoutManager = LinearLayoutManager(this)
+        devicesRecyclerView.adapter = deviceAdapter
+
+        // Load saved API URL from preferences and apply it
+        val prefs = DataFieldPreferences(this)
+        val savedUrl = prefs.apiUrl
+        apiUrlInput.setText(savedUrl)
+        TelemetryApi.setBaseUrl(savedUrl)
+
+        // Set up "go" button to apply URL and unfocus
+        apiUrlLayout.setEndIconOnClickListener {
+            applyApiUrl()
+        }
+
+        // Handle "Done" button on keyboard
+        apiUrlInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                applyApiUrl()
+                true
+            } else {
+                false
+            }
+        }
+
+        // Long-press on G-meter to reset max G-force
+        gForceMeter.setOnLongClickListener {
+            gForceMeter.resetMaxGForce()
+            Toast.makeText(this, "Max G-force reset", Toast.LENGTH_SHORT).show()
+            true
+        }
+
+        // Update field visibility based on preferences
+        updateFieldVisibility()
+    }
+
+    private fun applyApiUrl() {
+        val url = apiUrlInput.text.toString().trim()
+        if (url.isNotEmpty()) {
+            // Save to preferences
+            val prefs = DataFieldPreferences(this)
+            prefs.apiUrl = url
+
+            // Apply to API
+            TelemetryApi.setBaseUrl(url)
+
+            // Send video delay configuration to server
+            val videoDelayMs = prefs.videoDelayMs
+            lifecycleScope.launch {
+                val result = TelemetryApi.updateConfig(videoDelayMs)
+                result.onSuccess {
+                    Toast.makeText(this@MainActivity, "API URL updated (delay: ${videoDelayMs}ms)", Toast.LENGTH_SHORT).show()
+                }
+                result.onFailure {
+                    Toast.makeText(this@MainActivity, "API URL updated (config sync failed)", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            // Clear focus and hide keyboard
+            apiUrlInput.clearFocus()
+        }
+    }
+
+    private fun setupClickListeners() {
+        scanButton.setOnClickListener {
+            // Ensure API URL is applied
+            applyApiUrl()
+
+            if (raceBoxManager?.isBluetoothEnabled() == true) {
+                raceBoxManager?.startScan()
+            } else {
+                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                enableBluetoothLauncher.launch(enableBtIntent)
+            }
+        }
+
+        disconnectButton.setOnClickListener {
+            raceBoxManager?.disconnect()
+        }
+
+        zeroGMeterButton.setOnClickListener {
+            raceBoxManager?.zeroGMeter()
+            gForceMeter.resetMaxGForce()
+            Toast.makeText(this, "G-meter zeroed at current position", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun startAndBindService() {
+        val intent = Intent(this, RaceBoxService::class.java)
+        intent.action = RaceBoxService.ACTION_START
+        ContextCompat.startForegroundService(this, intent)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun observeTelemetry() {
+        lifecycleScope.launch {
+            raceBoxManager?.connectionState?.collectLatest { state ->
+                statusText.text = "Status: ${state.name}"
+                disconnectButton.isEnabled = state == RaceBoxManager.ConnectionState.CONNECTED
+                scanButton.isEnabled = state == RaceBoxManager.ConnectionState.DISCONNECTED
+            }
+        }
+
+        lifecycleScope.launch {
+            raceBoxManager?.telemetryData?.collectLatest { data ->
+                // Update G-meter
+                gForceMeter.updateGForces(data.gLat.toFloat(), data.gLong.toFloat())
+
+                // Update text displays
+                speedText.text = "Speed: %.1f km/h".format(data.speed)
+                gLatText.text = "G-Lat: %.2f".format(data.gLat)
+                gLongText.text = "G-Long: %.2f".format(data.gLong)
+                latitudeText.text = "Latitude: %.6f".format(data.latitude)
+                longitudeText.text = "Longitude: %.6f".format(data.longitude)
+                satellitesText.text = "Satellites: %d".format(data.satellites)
+                timestampText.text = "Timestamp: %s".format(data.timestamp ?: "--")
+            }
+        }
+
+        lifecycleScope.launch {
+            raceBoxManager?.scanResults?.collectLatest { devices ->
+                deviceAdapter.submitList(devices)
+            }
+        }
+    }
+
+    private fun updateFieldVisibility() {
+        val prefs = DataFieldPreferences(this)
+
+        speedText.visibility = if (prefs.sendSpeed) View.VISIBLE else View.GONE
+        gLatText.visibility = if (prefs.sendGLat) View.VISIBLE else View.GONE
+        gLongText.visibility = if (prefs.sendGLong) View.VISIBLE else View.GONE
+        latitudeText.visibility = if (prefs.sendLatitude) View.VISIBLE else View.GONE
+        longitudeText.visibility = if (prefs.sendLongitude) View.VISIBLE else View.GONE
+        satellitesText.visibility = if (prefs.sendSatellites) View.VISIBLE else View.GONE
+        timestampText.visibility = if (prefs.sendTimestamp) View.VISIBLE else View.GONE
+    }
+
+    private fun checkPermissions() {
+        val permissions = mutableListOf<String>()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            permissions.add(Manifest.permission.BLUETOOTH)
+            permissions.add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
+
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        val permissionsToRequest = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        }
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.action_settings -> {
+                showDataFieldsDialog()
+                true
+            }
+            R.id.action_stream_delay -> {
+                showStreamDelayDialog()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    private fun showDataFieldsDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_data_fields, null)
+        val prefs = DataFieldPreferences(this)
+
+        // Get checkboxes
+        val checkboxSpeed = dialogView.findViewById<CheckBox>(R.id.checkboxSpeed)
+        val checkboxGLat = dialogView.findViewById<CheckBox>(R.id.checkboxGLat)
+        val checkboxGLong = dialogView.findViewById<CheckBox>(R.id.checkboxGLong)
+        val checkboxLatitude = dialogView.findViewById<CheckBox>(R.id.checkboxLatitude)
+        val checkboxLongitude = dialogView.findViewById<CheckBox>(R.id.checkboxLongitude)
+        val checkboxSatellites = dialogView.findViewById<CheckBox>(R.id.checkboxSatellites)
+        val checkboxTimestamp = dialogView.findViewById<CheckBox>(R.id.checkboxTimestamp)
+
+        // Get frequency slider and label
+        val frequencySlider = dialogView.findViewById<Slider>(R.id.frequencySlider)
+        val frequencyLabel = dialogView.findViewById<TextView>(R.id.frequencyLabel)
+
+        // Set current values
+        checkboxSpeed.isChecked = prefs.sendSpeed
+        checkboxGLat.isChecked = prefs.sendGLat
+        checkboxGLong.isChecked = prefs.sendGLong
+        checkboxLatitude.isChecked = prefs.sendLatitude
+        checkboxLongitude.isChecked = prefs.sendLongitude
+        checkboxSatellites.isChecked = prefs.sendSatellites
+        checkboxTimestamp.isChecked = prefs.sendTimestamp
+
+        // Set frequency slider from current preference
+        val currentFrequency = prefs.getFrequencyHz()
+        frequencySlider.value = currentFrequency.toFloat()
+        updateFrequencyLabel(frequencyLabel, currentFrequency.toInt())
+
+        // Update label as slider moves
+        frequencySlider.addOnChangeListener { _, value, _ ->
+            updateFrequencyLabel(frequencyLabel, value.toInt())
+        }
+
+        AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                // Save preferences
+                prefs.sendSpeed = checkboxSpeed.isChecked
+                prefs.sendGLat = checkboxGLat.isChecked
+                prefs.sendGLong = checkboxGLong.isChecked
+                prefs.sendLatitude = checkboxLatitude.isChecked
+                prefs.sendLongitude = checkboxLongitude.isChecked
+                prefs.sendSatellites = checkboxSatellites.isChecked
+                prefs.sendTimestamp = checkboxTimestamp.isChecked
+
+                // Save frequency (convert Hz to milliseconds)
+                val frequencyHz = frequencySlider.value.toInt()
+                prefs.sendIntervalMs = (1000L / frequencyHz)
+
+                if (!prefs.hasEnabledFields()) {
+                    Toast.makeText(this, "At least one field must be enabled", Toast.LENGTH_SHORT).show()
+                    // Re-enable defaults
+                    prefs.sendSpeed = true
+                    prefs.sendGLat = true
+                    prefs.sendGLong = true
+                }
+
+                // Update field visibility based on new preferences
+                updateFieldVisibility()
+                Toast.makeText(this, "Settings saved: ${frequencyHz}Hz", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateFrequencyLabel(label: TextView, frequencyHz: Int) {
+        val intervalMs = 1000 / frequencyHz
+        label.text = "$frequencyHz Hz (${intervalMs}ms interval)"
+    }
+
+    private fun updateVideoDelayLabel(label: TextView, delayMs: Int) {
+        val seconds = delayMs / 1000.0
+        label.text = "$delayMs ms (%.1f seconds)".format(seconds)
+    }
+
+    private fun showStreamDelayDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_stream_delay, null)
+        val prefs = DataFieldPreferences(this)
+
+        // Get video delay slider and label
+        val videoDelaySlider = dialogView.findViewById<Slider>(R.id.videoDelaySlider)
+        val videoDelayLabel = dialogView.findViewById<TextView>(R.id.videoDelayLabel)
+
+        // Set current video delay from preference
+        val currentVideoDelay = prefs.videoDelayMs
+        videoDelaySlider.value = currentVideoDelay.toFloat()
+        updateVideoDelayLabel(videoDelayLabel, currentVideoDelay)
+
+        // Update video delay label as slider moves
+        videoDelaySlider.addOnChangeListener { _, value, _ ->
+            updateVideoDelayLabel(videoDelayLabel, value.toInt())
+        }
+
+        AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                // Save video delay
+                val videoDelayMs = videoDelaySlider.value.toInt()
+                prefs.videoDelayMs = videoDelayMs
+
+                // Send video delay to server
+                lifecycleScope.launch {
+                    val result = TelemetryApi.updateConfig(videoDelayMs)
+                    result.onSuccess {
+                        Toast.makeText(this@MainActivity, "Stream delay updated: ${videoDelayMs}ms", Toast.LENGTH_SHORT).show()
+                    }
+                    result.onFailure {
+                        Toast.makeText(this@MainActivity, "Stream delay saved (server update failed)", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+        }
+    }
+}
+
+class DeviceAdapter(
+    private val onDeviceClick: (BluetoothDevice) -> Unit
+) : RecyclerView.Adapter<DeviceAdapter.DeviceViewHolder>() {
+
+    private var devices = listOf<BluetoothDevice>()
+
+    fun submitList(newDevices: List<BluetoothDevice>) {
+        devices = newDevices
+        notifyDataSetChanged()
+    }
+
+    override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): DeviceViewHolder {
+        val view = android.view.LayoutInflater.from(parent.context)
+            .inflate(android.R.layout.simple_list_item_2, parent, false)
+        return DeviceViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: DeviceViewHolder, position: Int) {
+        holder.bind(devices[position])
+    }
+
+    override fun getItemCount() = devices.size
+
+    inner class DeviceViewHolder(itemView: android.view.View) : RecyclerView.ViewHolder(itemView) {
+        private val text1: android.widget.TextView = itemView.findViewById(android.R.id.text1)
+        private val text2: android.widget.TextView = itemView.findViewById(android.R.id.text2)
+
+        @android.annotation.SuppressLint("MissingPermission")
+        fun bind(device: BluetoothDevice) {
+            text1.text = device.name ?: "Unknown"
+            text2.text = device.address
+            itemView.setOnClickListener { onDeviceClick(device) }
+        }
+    }
+}

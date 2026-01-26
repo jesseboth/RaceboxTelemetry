@@ -1,0 +1,20 @@
+{
+  "name": "racebox-telemetry-server",
+  "version": "1.0.0",
+  "description": "RaceBox Telemetry API Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "deploy": "PORT=5000 node server.js",
+    "debug": "DEBUG=true node server.js"
+  },
+  "keywords": ["racebox", "telemetry", "api", "racing"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.0",
+    "ws": "^8.18.0"
+  }
+}

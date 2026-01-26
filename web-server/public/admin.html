@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RaceBox Admin Settings</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #007BFF;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #aaa;
+            font-size: 14px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            font-size: 20px;
+            margin-bottom: 16px;
+            color: #007BFF;
+        }
+
+        .setting-row {
+            margin-bottom: 24px;
+        }
+
+        .setting-row label {
+            display: block;
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        .delay-value {
+            font-size: 32px;
+            font-weight: bold;
+            text-align: center;
+            padding: 16px;
+            background: rgba(0, 123, 255, 0.2);
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .delay-value .ms {
+            color: #007BFF;
+        }
+
+        .delay-value .seconds {
+            font-size: 16px;
+            color: #aaa;
+            display: block;
+            margin-top: 8px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #007BFF;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #007BFF;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .range-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .info-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .info-item .label {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        .info-item .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007BFF;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .btn:hover {
+            background: #0056b3;
+        }
+
+        .btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 4px;
+            margin-top: 16px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .status.success {
+            background: rgba(40, 167, 69, 0.2);
+            border: 1px solid #28a745;
+            color: #28a745;
+        }
+
+        .status.error {
+            background: rgba(220, 53, 69, 0.2);
+            border: 1px solid #dc3545;
+            color: #dc3545;
+        }
+
+        .status.info {
+            background: rgba(0, 123, 255, 0.2);
+            border: 1px solid #007BFF;
+            color: #007BFF;
+        }
+
+        .tips {
+            background: rgba(255, 193, 7, 0.1);
+            border-left: 4px solid #ffc107;
+            padding: 16px;
+            margin-top: 24px;
+            border-radius: 4px;
+        }
+
+        .tips h3 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #ffc107;
+        }
+
+        .tips ol {
+            margin-left: 20px;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
+        .tips li {
+            color: #ddd;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .overlay-url {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            margin-top: 8px;
+            word-break: break-all;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏁 RaceBox Admin</h1>
+            <p>Stream Settings & Configuration</p>
+        </div>
+
+        <div class="card">
+            <h2>Video Stream Delay</h2>
+            <div class="setting-row">
+                <label>Current Delay</label>
+                <div class="delay-value">
+                    <span class="ms" id="delayValue">1500 ms</span>
+                    <span class="seconds" id="delaySeconds">(1.5 seconds)</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Adjust Delay</label>
+                <input type="range" id="delaySlider" min="0" max="5000" step="100" value="1500">
+                <div class="range-labels">
+                    <span>0 ms (No delay)</span>
+                    <span>5000 ms (5 seconds)</span>
+                </div>
+            </div>
+
+            <button class="btn" id="saveBtn">Save & Apply</button>
+
+            <div id="statusMessage" class="status hidden"></div>
+        </div>
+
+        <div class="card">
+            <h2>Server Information</h2>
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="label">Session Status</div>
+                    <div class="value" id="sessionStatus">--</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Data Points</div>
+                    <div class="value" id="dataPoints">0</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Server Uptime</div>
+                    <div class="value" id="uptime">--</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Overlay URL</h2>
+            <p style="color: #aaa; font-size: 14px; margin-bottom: 12px;">
+                Use this URL as a browser source in OBS:
+            </p>
+            <div class="overlay-url" id="overlayUrl">http://localhost:5000</div>
+        </div>
+
+        <div class="tips">
+            <h3>💡 How to Find Your Delay:</h3>
+            <ol>
+                <li>Start your RTMP stream from phone to OBS</li>
+                <li>Add the overlay URL as a browser source in OBS</li>
+                <li>While driving, do a hard brake</li>
+                <li>Watch when the G-meter reacts vs. when you see it in the video</li>
+                <li>If overlay is too fast → increase delay</li>
+                <li>If overlay is too slow → decrease delay</li>
+                <li>Adjust until perfectly synced!</li>
+            </ol>
+            <p style="margin-top: 12px; font-size: 13px; color: #bbb;">
+                <strong>Typical values:</strong> 360p local (800-1200ms), 360p network (1500-2000ms), 720p/1080p (2000-3000ms)
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+        let currentDelay = 1500;
+
+        const delaySlider = document.getElementById('delaySlider');
+        const delayValue = document.getElementById('delayValue');
+        const delaySeconds = document.getElementById('delaySeconds');
+        const saveBtn = document.getElementById('saveBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        const sessionStatus = document.getElementById('sessionStatus');
+        const dataPoints = document.getElementById('dataPoints');
+        const uptime = document.getElementById('uptime');
+        const overlayUrl = document.getElementById('overlayUrl');
+
+        // Update display when slider moves
+        delaySlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            updateDelayDisplay(value);
+        });
+
+        function updateDelayDisplay(ms) {
+            const seconds = (ms / 1000).toFixed(1);
+            delayValue.textContent = `${ms} ms`;
+            delaySeconds.textContent = `(${seconds} seconds)`;
+        }
+
+        // Load current config
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_URL}/config`);
+                const config = await response.json();
+                currentDelay = config.video_delay_ms;
+                delaySlider.value = currentDelay;
+                updateDelayDisplay(currentDelay);
+            } catch (e) {
+                console.error('Failed to load config:', e);
+            }
+        }
+
+        // Load server info
+        async function loadServerInfo() {
+            try {
+                const [healthRes, sessionRes] = await Promise.all([
+                    fetch(`${API_URL}/health`),
+                    fetch(`${API_URL}/session`)
+                ]);
+
+                const health = await healthRes.json();
+                const session = await sessionRes.json();
+
+                // Update uptime
+                const uptimeSeconds = Math.floor(health.uptime);
+                const hours = Math.floor(uptimeSeconds / 3600);
+                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                uptime.textContent = `${hours}h ${minutes}m`;
+
+                // Update session info
+                if (session.status === 'no active session') {
+                    sessionStatus.textContent = 'Idle';
+                    dataPoints.textContent = '0';
+                } else {
+                    sessionStatus.textContent = 'Active';
+                    dataPoints.textContent = session.dataPoints || 0;
+                }
+            } catch (e) {
+                console.error('Failed to load server info:', e);
+                sessionStatus.textContent = 'Unknown';
+                uptime.textContent = '--';
+            }
+        }
+
+        // Save delay to server
+        async function saveDelay() {
+            const newDelay = parseInt(delaySlider.value);
+
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+
+            try {
+                const response = await fetch(`${API_URL}/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        video_delay_ms: newDelay
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    currentDelay = newDelay;
+                    showStatus(`Delay updated to ${newDelay}ms - all overlays will use this value`, 'success');
+                } else {
+                    showStatus(`Error: ${result.message}`, 'error');
+                }
+            } catch (e) {
+                showStatus(`Failed to save: ${e.message}`, 'error');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save & Apply';
+            }
+        }
+
+        function showStatus(message, type) {
+            statusMessage.textContent = message;
+            statusMessage.className = `status ${type}`;
+            statusMessage.classList.remove('hidden');
+
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusMessage.classList.add('hidden');
+                }, 5000);
+            }
+        }
+
+        // Set overlay URL
+        overlayUrl.textContent = `${window.location.origin}/`;
+
+        // Event listeners
+        saveBtn.addEventListener('click', saveDelay);
+
+        // Initialize
+        loadConfig();
+        loadServerInfo();
+
+        // Refresh server info every 5 seconds
+        setInterval(loadServerInfo, 5000);
+
+        console.log('RaceBox Admin initialized');
+        console.log(`API: ${API_URL}`);
+    </script>
+</body>
+</html>

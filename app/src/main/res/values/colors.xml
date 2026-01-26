@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Blue color from HTML overlay -->
+    <color name="racebox_blue">#007BFF</color>
+    <color name="racebox_blue_dark">#0056b3</color>
+
+    <!-- Status colors -->
+    <color name="status_green">#28a745</color>
+    <color name="status_cyan">#00c3ff</color>
+    <color name="status_red">#dc3545</color>
+    <color name="status_orange">#f59e0b</color>
+
+    <!-- Base colors -->
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="dark_grey">#1E1E1E</color>
+    <color name="surface_dark">#2D2D2D</color>
+</resources>
