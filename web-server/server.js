@@ -13,6 +13,7 @@ const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 5000;
 const DEBUG = process.env.DEBUG === 'true';
 let VIDEO_DELAY_MS = parseInt(process.env.VIDEO_DELAY_MS) || 1500;
+let SEND_FREQUENCY_HZ = parseInt(process.env.SEND_FREQUENCY_HZ) || 10; // Default 10Hz
 
 // Middleware
 app.use(cors());
@@ -89,7 +90,11 @@ function broadcastTelemetry(data) {
 function broadcastConfig() {
     const message = JSON.stringify({
         type: 'config',
-        data: { video_delay_ms: VIDEO_DELAY_MS }
+        data: {
+            video_delay_ms: VIDEO_DELAY_MS,
+            send_frequency_hz: SEND_FREQUENCY_HZ,
+            send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ)
+        }
     });
     wsClients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
@@ -237,11 +242,13 @@ app.get('/telemetry', (req, res) => {
     res.json(latestTelemetry);
 });
 
-// GET /config - Configuration for overlay
+// GET /config - Configuration for overlay and Android app
 app.get('/config', (req, res) => {
     log('Config requested, session:', currentSession);
     res.json({
         video_delay_ms: VIDEO_DELAY_MS,
+        send_frequency_hz: SEND_FREQUENCY_HZ,
+        send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ),
         update_interval_ms: 100,
         session: currentSession
     });
@@ -249,31 +256,49 @@ app.get('/config', (req, res) => {
 
 // POST /config - Update configuration
 app.post('/config', (req, res) => {
-    const { video_delay_ms } = req.body;
+    const { video_delay_ms, send_frequency_hz } = req.body;
+    let updated = false;
+    const response = { status: 'ok' };
 
     if (video_delay_ms !== undefined) {
         const newDelay = parseInt(video_delay_ms);
         if (!isNaN(newDelay) && newDelay >= 0 && newDelay <= 10000) {
             VIDEO_DELAY_MS = newDelay;
             console.log(`Video delay updated to ${VIDEO_DELAY_MS}ms`);
-
-            // Broadcast config change to all connected overlays
-            broadcastConfig();
-
-            res.json({
-                status: 'ok',
-                video_delay_ms: VIDEO_DELAY_MS
-            });
+            response.video_delay_ms = VIDEO_DELAY_MS;
+            updated = true;
         } else {
-            res.status(400).json({
+            return res.status(400).json({
                 status: 'error',
                 message: 'Invalid video_delay_ms value (must be 0-10000)'
             });
         }
+    }
+
+    if (send_frequency_hz !== undefined) {
+        const newFreq = parseInt(send_frequency_hz);
+        if (!isNaN(newFreq) && newFreq >= 1 && newFreq <= 50) {
+            SEND_FREQUENCY_HZ = newFreq;
+            console.log(`Send frequency updated to ${SEND_FREQUENCY_HZ}Hz (${Math.round(1000/SEND_FREQUENCY_HZ)}ms interval)`);
+            response.send_frequency_hz = SEND_FREQUENCY_HZ;
+            response.send_interval_ms = Math.round(1000 / SEND_FREQUENCY_HZ);
+            updated = true;
+        } else {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid send_frequency_hz value (must be 1-50)'
+            });
+        }
+    }
+
+    if (updated) {
+        // Broadcast config change to all connected overlays
+        broadcastConfig();
+        res.json(response);
     } else {
         res.status(400).json({
             status: 'error',
-            message: 'Missing video_delay_ms parameter'
+            message: 'No valid parameters provided'
         });
     }
 });

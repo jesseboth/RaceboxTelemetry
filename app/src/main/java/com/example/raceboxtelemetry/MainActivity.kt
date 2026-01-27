@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -395,10 +396,6 @@ class MainActivity : AppCompatActivity() {
         val checkboxSatellites = dialogView.findViewById<CheckBox>(R.id.checkboxSatellites)
         val checkboxTimestamp = dialogView.findViewById<CheckBox>(R.id.checkboxTimestamp)
 
-        // Get frequency slider and label
-        val frequencySlider = dialogView.findViewById<Slider>(R.id.frequencySlider)
-        val frequencyLabel = dialogView.findViewById<TextView>(R.id.frequencyLabel)
-
         // Set current values
         val checkboxes = mapOf(
             checkboxSpeed to prefs.sendSpeed,
@@ -410,17 +407,6 @@ class MainActivity : AppCompatActivity() {
             checkboxTimestamp to prefs.sendTimestamp
         )
         checkboxes.forEach { (checkbox, value) -> checkbox.isChecked = value }
-
-        // Set frequency slider from current preference
-        // Round to nearest integer since slider uses stepSize=1
-        val currentFrequency = prefs.getFrequencyHz().toInt()
-        frequencySlider.value = currentFrequency.toFloat()
-        updateFrequencyLabel(frequencyLabel, currentFrequency)
-
-        // Update label as slider moves
-        frequencySlider.addOnChangeListener { _, value, _ ->
-            updateFrequencyLabel(frequencyLabel, value.toInt())
-        }
 
         AlertDialog.Builder(this)
             .setView(dialogView)
@@ -434,10 +420,6 @@ class MainActivity : AppCompatActivity() {
                 prefs.sendSatellites = checkboxSatellites.isChecked
                 prefs.sendTimestamp = checkboxTimestamp.isChecked
 
-                // Save frequency (convert Hz to milliseconds)
-                val frequencyHz = frequencySlider.value.toInt()
-                prefs.sendIntervalMs = (1000L / frequencyHz)
-
                 if (!prefs.hasEnabledFields()) {
                     Toast.makeText(this, "At least one field must be enabled", Toast.LENGTH_SHORT).show()
                     // Re-enable defaults
@@ -448,7 +430,8 @@ class MainActivity : AppCompatActivity() {
 
                 // Update field visibility based on new preferences
                 updateFieldVisibility()
-                Toast.makeText(this, "Settings saved: ${frequencyHz}Hz", Toast.LENGTH_SHORT).show()
+
+                Toast.makeText(this, "Data fields saved", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -475,15 +458,64 @@ class MainActivity : AppCompatActivity() {
         // Get video delay slider and label
         val videoDelaySlider = dialogView.findViewById<Slider>(R.id.videoDelaySlider)
         val videoDelayLabel = dialogView.findViewById<TextView>(R.id.videoDelayLabel)
+        val delayInfoButton = dialogView.findViewById<MaterialButton>(R.id.delayInfoButton)
+
+        // Get frequency slider and label
+        val frequencySlider = dialogView.findViewById<Slider>(R.id.frequencySlider)
+        val frequencyLabel = dialogView.findViewById<TextView>(R.id.frequencyLabel)
+        val frequencyInfoButton = dialogView.findViewById<MaterialButton>(R.id.frequencyInfoButton)
 
         // Set current video delay from preference
         val currentVideoDelay = prefs.videoDelayMs
         videoDelaySlider.value = currentVideoDelay.toFloat()
         updateVideoDelayLabel(videoDelayLabel, currentVideoDelay)
 
+        // Set current frequency from preference
+        val currentFrequency = prefs.getFrequencyHz().toInt()
+        frequencySlider.value = currentFrequency.toFloat()
+        updateFrequencyLabel(frequencyLabel, currentFrequency)
+
         // Update video delay label as slider moves
         videoDelaySlider.addOnChangeListener { _, value, _ ->
             updateVideoDelayLabel(videoDelayLabel, value.toInt())
+        }
+
+        // Update frequency label as slider moves
+        frequencySlider.addOnChangeListener { _, value, _ ->
+            updateFrequencyLabel(frequencyLabel, value.toInt())
+        }
+
+        // Delay info button
+        delayInfoButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Video Stream Delay")
+                .setMessage("Sync telemetry overlay with RTMP stream delay. Adjust this value to match the latency of your video stream in OBS.\n\n" +
+                        "How to find your delay:\n" +
+                        "1. Start your RTMP stream to OBS\n" +
+                        "2. Hard brake while driving\n" +
+                        "3. Watch when the G-meter reacts vs. the video\n" +
+                        "4. Adjust until they match\n\n" +
+                        "Typical values:\n" +
+                        "• 360p local: 800-1200ms\n" +
+                        "• 360p network: 1500-2000ms\n" +
+                        "• 720p/1080p: 2000-3000ms")
+                .setPositiveButton("OK", null)
+                .show()
+        }
+
+        // Frequency info button
+        frequencyInfoButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Send Frequency")
+                .setMessage("Controls how often the Android app sends telemetry data to the server.\n\n" +
+                        "Higher frequency = smoother overlay but more network/battery usage\n" +
+                        "Lower frequency = less smooth but more efficient\n\n" +
+                        "Recommended:\n" +
+                        "• 10Hz (100ms) - Good balance\n" +
+                        "• 6Hz (166ms) - Conservative/battery saving\n" +
+                        "• 20Hz (50ms) - Very smooth (high bandwidth)")
+                .setPositiveButton("OK", null)
+                .show()
         }
 
         AlertDialog.Builder(this)
@@ -493,14 +525,23 @@ class MainActivity : AppCompatActivity() {
                 val videoDelayMs = videoDelaySlider.value.toInt()
                 prefs.videoDelayMs = videoDelayMs
 
-                // Send video delay to server
+                // Save frequency
+                val frequencyHz = frequencySlider.value.toInt()
+                prefs.sendIntervalMs = (1000L / frequencyHz)
+
+                // Push both settings to server
                 lifecycleScope.launch {
-                    val result = TelemetryApi.updateConfig(videoDelayMs)
+                    val result = TelemetryApi.updateConfig(
+                        videoDelayMs = videoDelayMs,
+                        sendFrequencyHz = frequencyHz
+                    )
                     result.onSuccess {
-                        Toast.makeText(this@MainActivity, "Stream delay updated: ${videoDelayMs}ms", Toast.LENGTH_SHORT).show()
+                        Log.d("MainActivity", "✓ Settings pushed to server: ${videoDelayMs}ms delay, ${frequencyHz}Hz")
+                        Toast.makeText(this@MainActivity, "Settings updated: ${videoDelayMs}ms, ${frequencyHz}Hz", Toast.LENGTH_SHORT).show()
                     }
-                    result.onFailure {
-                        Toast.makeText(this@MainActivity, "Stream delay saved (server update failed)", Toast.LENGTH_LONG).show()
+                    result.onFailure { e ->
+                        Log.w("MainActivity", "Failed to push settings to server: ${e.message}")
+                        Toast.makeText(this@MainActivity, "Settings saved (server update failed)", Toast.LENGTH_LONG).show()
                     }
                 }
             }

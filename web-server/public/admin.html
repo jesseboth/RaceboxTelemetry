@@ -246,7 +246,7 @@
         <div class="card">
             <h2>Video Stream Delay</h2>
             <p style="color: #00c3ff; font-size: 13px; margin-bottom: 12px; font-weight: bold;">
-                ⚡ Live Updates - All overlays update instantly when you click Save (no refresh needed)
+                ⚡ Live Updates - Drag slider to adjust, overlays update automatically
             </p>
             <div class="setting-row">
                 <label>Current Delay</label>
@@ -265,9 +265,32 @@
                 </div>
             </div>
 
-            <button class="btn" id="saveBtn">Save & Apply</button>
-
             <div id="statusMessage" class="status hidden"></div>
+        </div>
+
+        <div class="card">
+            <h2>Android App Send Frequency</h2>
+            <p style="color: #00c3ff; font-size: 13px; margin-bottom: 12px; font-weight: bold;">
+                ⚡ Drag slider to adjust - Android app syncs within 30 seconds
+            </p>
+            <div class="setting-row">
+                <label>Current Frequency</label>
+                <div class="delay-value">
+                    <span class="ms" id="frequencyValue">10 Hz</span>
+                    <span class="seconds" id="frequencyInterval">(100ms interval)</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Adjust Frequency</label>
+                <input type="range" id="frequencySlider" min="1" max="25" step="1" value="10">
+                <div class="range-labels">
+                    <span>1 Hz (1000ms)</span>
+                    <span>25 Hz (40ms)</span>
+                </div>
+            </div>
+
+            <div id="statusMessageFreq" class="status hidden"></div>
         </div>
 
         <div class="card">
@@ -316,21 +339,113 @@
     <script>
         const API_URL = window.location.origin;
         let currentDelay = 1500;
+        let currentFrequency = 10;
 
         const delaySlider = document.getElementById('delaySlider');
         const delayValue = document.getElementById('delayValue');
         const delaySeconds = document.getElementById('delaySeconds');
-        const saveBtn = document.getElementById('saveBtn');
         const statusMessage = document.getElementById('statusMessage');
+        const frequencySlider = document.getElementById('frequencySlider');
+        const frequencyValue = document.getElementById('frequencyValue');
+        const frequencyInterval = document.getElementById('frequencyInterval');
+        const statusMessageFreq = document.getElementById('statusMessageFreq');
         const sessionStatus = document.getElementById('sessionStatus');
         const dataPoints = document.getElementById('dataPoints');
         const uptime = document.getElementById('uptime');
         const overlayUrl = document.getElementById('overlayUrl');
 
-        // Update display when slider moves
+        // Debounce timers for live updates
+        let delayDebounceTimer = null;
+        let frequencyDebounceTimer = null;
+
+        // Track if sliders are being actively used
+        let isDelaySliderActive = false;
+        let isFrequencySliderActive = false;
+
+        // Track when delay slider starts being used
+        delaySlider.addEventListener('mousedown', () => {
+            isDelaySliderActive = true;
+        });
+
+        delaySlider.addEventListener('touchstart', () => {
+            isDelaySliderActive = true;
+        });
+
+        // Update display and auto-save when slider moves (with debouncing)
         delaySlider.addEventListener('input', (e) => {
             const value = parseInt(e.target.value);
             updateDelayDisplay(value);
+
+            // Clear existing timer
+            if (delayDebounceTimer) {
+                clearTimeout(delayDebounceTimer);
+            }
+
+            // Show "updating" status
+            showStatus('Adjusting...', 'info');
+
+            // Save after 500ms of no movement
+            delayDebounceTimer = setTimeout(() => {
+                saveDelay(value);
+                delayDebounceTimer = null;
+                isDelaySliderActive = false;
+            }, 500);
+        });
+
+        // Track when delay slider is released
+        delaySlider.addEventListener('mouseup', () => {
+            // Wait a bit before allowing updates (let the debounce timer finish)
+            setTimeout(() => {
+                isDelaySliderActive = false;
+            }, 600);
+        });
+
+        delaySlider.addEventListener('touchend', () => {
+            setTimeout(() => {
+                isDelaySliderActive = false;
+            }, 600);
+        });
+
+        // Track when frequency slider starts being used
+        frequencySlider.addEventListener('mousedown', () => {
+            isFrequencySliderActive = true;
+        });
+
+        frequencySlider.addEventListener('touchstart', () => {
+            isFrequencySliderActive = true;
+        });
+
+        frequencySlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            updateFrequencyDisplay(value);
+
+            // Clear existing timer
+            if (frequencyDebounceTimer) {
+                clearTimeout(frequencyDebounceTimer);
+            }
+
+            // Show "updating" status
+            showFreqStatus('Adjusting...', 'info');
+
+            // Save after 500ms of no movement
+            frequencyDebounceTimer = setTimeout(() => {
+                saveFrequency(value);
+                frequencyDebounceTimer = null;
+                isFrequencySliderActive = false;
+            }, 500);
+        });
+
+        // Track when frequency slider is released
+        frequencySlider.addEventListener('mouseup', () => {
+            setTimeout(() => {
+                isFrequencySliderActive = false;
+            }, 600);
+        });
+
+        frequencySlider.addEventListener('touchend', () => {
+            setTimeout(() => {
+                isFrequencySliderActive = false;
+            }, 600);
         });
 
         function updateDelayDisplay(ms) {
@@ -339,14 +454,43 @@
             delaySeconds.textContent = `(${seconds} seconds)`;
         }
 
-        // Load current config
-        async function loadConfig() {
+        function updateFrequencyDisplay(hz) {
+            const intervalMs = Math.round(1000 / hz);
+            frequencyValue.textContent = `${hz} Hz`;
+            frequencyInterval.textContent = `(${intervalMs}ms interval)`;
+        }
+
+        // Load current config (respects active sliders)
+        async function loadConfig(isPolling = false) {
             try {
                 const response = await fetch(`${API_URL}/config`);
                 const config = await response.json();
-                currentDelay = config.video_delay_ms;
-                delaySlider.value = currentDelay;
-                updateDelayDisplay(currentDelay);
+
+                // Only update delay if slider is not being actively used
+                if (!isDelaySliderActive && config.video_delay_ms !== undefined) {
+                    const serverDelay = config.video_delay_ms;
+                    if (serverDelay !== currentDelay) {
+                        currentDelay = serverDelay;
+                        delaySlider.value = currentDelay;
+                        updateDelayDisplay(currentDelay);
+                        if (isPolling) {
+                            console.log(`Delay synced from server: ${currentDelay}ms`);
+                        }
+                    }
+                }
+
+                // Only update frequency if slider is not being actively used
+                if (!isFrequencySliderActive && config.send_frequency_hz !== undefined) {
+                    const serverFreq = config.send_frequency_hz;
+                    if (serverFreq !== currentFrequency) {
+                        currentFrequency = serverFreq;
+                        frequencySlider.value = currentFrequency;
+                        updateFrequencyDisplay(currentFrequency);
+                        if (isPolling) {
+                            console.log(`Frequency synced from server: ${currentFrequency}Hz`);
+                        }
+                    }
+                }
             } catch (e) {
                 console.error('Failed to load config:', e);
             }
@@ -384,13 +528,8 @@
             }
         }
 
-        // Save delay to server
-        async function saveDelay() {
-            const newDelay = parseInt(delaySlider.value);
-
-            saveBtn.disabled = true;
-            saveBtn.textContent = 'Saving...';
-
+        // Save delay to server (auto-called by slider debounce)
+        async function saveDelay(newDelay) {
             try {
                 const response = await fetch(`${API_URL}/config`, {
                     method: 'POST',
@@ -406,15 +545,39 @@
 
                 if (response.ok) {
                     currentDelay = newDelay;
-                    showStatus(`✓ Delay updated to ${newDelay}ms - all overlays updated instantly (no refresh needed)`, 'success');
+                    showStatus(`✓ Updated to ${newDelay}ms - overlays synced`, 'success');
                 } else {
                     showStatus(`Error: ${result.message}`, 'error');
                 }
             } catch (e) {
-                showStatus(`Failed to save: ${e.message}`, 'error');
-            } finally {
-                saveBtn.disabled = false;
-                saveBtn.textContent = 'Save & Apply';
+                showStatus(`Failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Save frequency to server (auto-called by slider debounce)
+        async function saveFrequency(newFrequency) {
+            try {
+                const response = await fetch(`${API_URL}/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        send_frequency_hz: newFrequency
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    currentFrequency = newFrequency;
+                    const intervalMs = Math.round(1000 / newFrequency);
+                    showFreqStatus(`✓ Updated to ${newFrequency}Hz (${intervalMs}ms)`, 'success');
+                } else {
+                    showFreqStatus(`Error: ${result.message}`, 'error');
+                }
+            } catch (e) {
+                showFreqStatus(`Failed: ${e.message}`, 'error');
             }
         }
 
@@ -430,15 +593,29 @@
             }
         }
 
+        function showFreqStatus(message, type) {
+            statusMessageFreq.textContent = message;
+            statusMessageFreq.className = `status ${type}`;
+            statusMessageFreq.classList.remove('hidden');
+
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusMessageFreq.classList.add('hidden');
+                }, 5000);
+            }
+        }
+
         // Set overlay URL
         overlayUrl.textContent = `${window.location.origin}/`;
-
-        // Event listeners
-        saveBtn.addEventListener('click', saveDelay);
 
         // Initialize
         loadConfig();
         loadServerInfo();
+
+        // Poll config every 1 second to stay in sync
+        setInterval(() => {
+            loadConfig(true); // true = isPolling flag
+        }, 1000);
 
         // Refresh server info every 5 seconds
         setInterval(loadServerInfo, 5000);

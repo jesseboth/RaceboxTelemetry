@@ -35,6 +35,7 @@ class RaceBoxService : Service() {
     private var isSending = false
     private val MAX_CONSECUTIVE_FAILURES = 10
     private var lastSentTime = 0L
+    private var configSyncJob: Job? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): RaceBoxService = this@RaceBoxService
@@ -71,6 +72,10 @@ class RaceBoxService : Service() {
 
     private fun startDataCollection() {
         Log.d(TAG, "Starting data collection at ${prefs.getFrequencyHz()} Hz (${prefs.sendIntervalMs}ms interval)")
+
+        // Start periodic config sync from server
+        startConfigSync()
+
         dataSendingJob = serviceScope.launch {
             raceBoxManager.telemetryData.collect { data ->
                 val now = System.currentTimeMillis()
@@ -125,8 +130,50 @@ class RaceBoxService : Service() {
         startForeground(NOTIFICATION_ID, notification)
     }
 
+    private fun startConfigSync() {
+        configSyncJob = serviceScope.launch {
+            // Sync immediately on start
+            syncConfigFromServer()
+
+            // Then sync every 30 seconds
+            while (isActive) {
+                delay(30000)
+                syncConfigFromServer()
+            }
+        }
+    }
+
+    private suspend fun syncConfigFromServer() {
+        try {
+            val result = TelemetryApi.getConfig()
+            result.onSuccess { config ->
+                val serverFrequencyHz = config.send_frequency_hz
+                val serverDelayMs = config.video_delay_ms
+
+                if (serverFrequencyHz > 0) {
+                    val serverIntervalMs = (1000L / serverFrequencyHz)
+                    if (prefs.sendIntervalMs != serverIntervalMs) {
+                        prefs.sendIntervalMs = serverIntervalMs
+                        Log.d(TAG, "✓ Config synced from server: ${serverFrequencyHz}Hz (${serverIntervalMs}ms)")
+                    }
+                }
+
+                if (serverDelayMs >= 0 && prefs.videoDelayMs != serverDelayMs) {
+                    prefs.videoDelayMs = serverDelayMs
+                    Log.d(TAG, "✓ Video delay synced from server: ${serverDelayMs}ms")
+                }
+            }
+            result.onFailure { e ->
+                Log.w(TAG, "Failed to sync config from server: ${e.message}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing config", e)
+        }
+    }
+
     private fun stopDataCollection() {
         dataSendingJob?.cancel()
+        configSyncJob?.cancel()
         raceBoxManager.disconnect()
         Log.d(TAG, "Data collection stopped")
     }

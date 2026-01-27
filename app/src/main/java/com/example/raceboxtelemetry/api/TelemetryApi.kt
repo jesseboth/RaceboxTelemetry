@@ -7,6 +7,7 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
 import java.util.concurrent.TimeUnit
 
@@ -20,12 +21,23 @@ data class ConfigResponse(
     val message: String? = null
 )
 
+data class ServerConfig(
+    val video_delay_ms: Int,
+    val send_frequency_hz: Int,
+    val send_interval_ms: Int,
+    val update_interval_ms: Int? = null,
+    val session: Any? = null
+)
+
 interface TelemetryApiService {
     @POST("telemetry")
     suspend fun sendTelemetry(@Body data: TelemetryData): Response<Unit>
 
+    @GET("config")
+    suspend fun getConfig(): Response<ServerConfig>
+
     @POST("config")
-    suspend fun updateConfig(@Body config: ConfigUpdate): Response<ConfigResponse>
+    suspend fun updateConfig(@Body config: Map<String, Int>): Response<ConfigResponse>
 }
 
 object TelemetryApi {
@@ -77,9 +89,35 @@ object TelemetryApi {
         }
     }
 
-    suspend fun updateConfig(videoDelayMs: Int): Result<Unit> {
+    suspend fun getConfig(): Result<ServerConfig> {
         return try {
-            val response = getService().updateConfig(ConfigUpdate(videoDelayMs))
+            val response = getService().getConfig()
+            if (response.isSuccessful) {
+                val config = response.body()
+                if (config != null) {
+                    Result.success(config)
+                } else {
+                    Result.failure(Exception("Empty config response"))
+                }
+            } else {
+                Result.failure(Exception("API error: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateConfig(videoDelayMs: Int? = null, sendFrequencyHz: Int? = null): Result<Unit> {
+        return try {
+            val configMap = mutableMapOf<String, Int>()
+            if (videoDelayMs != null) {
+                configMap["video_delay_ms"] = videoDelayMs
+            }
+            if (sendFrequencyHz != null) {
+                configMap["send_frequency_hz"] = sendFrequencyHz
+            }
+
+            val response = getService().updateConfig(configMap)
             if (response.isSuccessful) {
                 Result.success(Unit)
             } else {

@@ -5,35 +5,32 @@
     android:orientation="vertical"
     android:padding="24dp">
 
-    <com.google.android.material.textview.MaterialTextView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Video Stream Delay"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:paddingBottom="16dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="16dp">
 
-    <com.google.android.material.textview.MaterialTextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Sync telemetry overlay with RTMP stream delay. Adjust this value to match the latency of your video stream in OBS."
-        android:textSize="14sp"
-        android:paddingBottom="16dp" />
+        <com.google.android.material.textview.MaterialTextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Video Stream Delay"
+            android:textSize="20sp"
+            android:textStyle="bold" />
 
-    <com.google.android.material.textview.MaterialTextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="How to find your delay:"
-        android:textSize="14sp"
-        android:textStyle="bold"
-        android:paddingBottom="8dp" />
-
-    <com.google.android.material.textview.MaterialTextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="1. Start your RTMP stream to OBS\n2. Hard brake while driving\n3. Watch when the G-meter reacts vs. the video\n4. Adjust until they match"
-        android:textSize="12sp"
-        android:paddingBottom="16dp" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/delayInfoButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="ⓘ"
+            android:textSize="20sp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:padding="0dp"
+            style="@style/Widget.Material3.Button.IconButton" />
+    </LinearLayout>
 
     <View
         android:layout_width="match_parent"
@@ -86,21 +83,75 @@
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_marginTop="16dp"
-        android:layout_marginBottom="8dp"
+        android:layout_marginBottom="16dp"
         android:background="?android:attr/listDivider" />
 
-    <com.google.android.material.textview.MaterialTextView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Typical values:"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:paddingBottom="4dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="8dp">
+
+        <com.google.android.material.textview.MaterialTextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Send Frequency"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/frequencyInfoButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="ⓘ"
+            android:textSize="20sp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:padding="0dp"
+            style="@style/Widget.Material3.Button.IconButton" />
+    </LinearLayout>
 
     <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/frequencyLabel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="• 360p local: 800-1200ms\n• 360p network: 1500-2000ms\n• 720p/1080p: 2000-3000ms"
-        android:textSize="12sp" />
+        android:text="10 Hz (100ms interval)"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:paddingBottom="8dp"
+        android:gravity="center" />
+
+    <com.google.android.material.slider.Slider
+        android:id="@+id/frequencySlider"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:valueFrom="1"
+        android:valueTo="25"
+        android:value="10"
+        android:stepSize="1" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <com.google.android.material.textview.MaterialTextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="1 Hz\n(1000ms)"
+            android:textSize="12sp"
+            android:gravity="start" />
+
+        <com.google.android.material.textview.MaterialTextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="25 Hz\n(40ms)"
+            android:textSize="12sp"
+            android:gravity="end" />
+    </LinearLayout>
 
 </LinearLayout>

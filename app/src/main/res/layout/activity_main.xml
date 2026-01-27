@@ -118,7 +118,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
                 android:text="Speed: 0.0 km/h"
-                android:textSize="24sp" />
+                android:textSize="16sp" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/gLatText"
@@ -126,7 +126,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="G-Lat: 0.00"
-                android:textSize="20sp" />
+                android:textSize="16sp" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/gLongText"
@@ -134,7 +134,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="G-Long: 0.00"
-                android:textSize="20sp" />
+                android:textSize="16sp" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/latitudeText"
