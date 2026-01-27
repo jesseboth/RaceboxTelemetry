@@ -41,8 +41,6 @@ import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var apiUrlLayout: TextInputLayout
-    private lateinit var apiUrlInput: TextInputEditText
     private lateinit var scanButton: MaterialButton
     private lateinit var connectButton: MaterialButton
     private lateinit var disconnectButton: MaterialButton
@@ -56,21 +54,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var longitudeText: MaterialTextView
     private lateinit var satellitesText: MaterialTextView
     private lateinit var timestampText: MaterialTextView
-    private lateinit var devicesRecyclerView: RecyclerView
 
     private var raceBoxService: RaceBoxService? = null
     private var raceBoxManager: RaceBoxManager? = null
     private var serviceBound = false
     private lateinit var prefs: DataFieldPreferences
-
-    private val deviceAdapter = DeviceAdapter(
-        onDeviceClick = { device ->
-            raceBoxManager?.connect(device)
-        },
-        onDeviceLongClick = { device ->
-            showDeviceAliasDialog(device)
-        }
-    )
+    private var scanDialog: AlertDialog? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -127,8 +116,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializeViews() {
-        apiUrlLayout = findViewById(R.id.apiUrlLayout)
-        apiUrlInput = findViewById(R.id.apiUrlInput)
         scanButton = findViewById(R.id.scanButton)
         connectButton = findViewById(R.id.connectButton)
         disconnectButton = findViewById(R.id.disconnectButton)
@@ -142,30 +129,10 @@ class MainActivity : AppCompatActivity() {
         longitudeText = findViewById(R.id.longitudeText)
         satellitesText = findViewById(R.id.satellitesText)
         timestampText = findViewById(R.id.timestampText)
-        devicesRecyclerView = findViewById(R.id.devicesRecyclerView)
-
-        devicesRecyclerView.layoutManager = LinearLayoutManager(this)
-        devicesRecyclerView.adapter = deviceAdapter
 
         // Load saved API URL from preferences and apply it
         val savedUrl = prefs.apiUrl
-        apiUrlInput.setText(savedUrl)
         TelemetryApi.setBaseUrl(savedUrl)
-
-        // Set up "go" button to apply URL and unfocus
-        apiUrlLayout.setEndIconOnClickListener {
-            applyApiUrl()
-        }
-
-        // Handle "Done" button on keyboard
-        apiUrlInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE) {
-                applyApiUrl()
-                true
-            } else {
-                false
-            }
-        }
 
         // Long-press on G-meter to reset max G-force
         gForceMeter.setOnLongClickListener {
@@ -178,39 +145,10 @@ class MainActivity : AppCompatActivity() {
         updateFieldVisibility()
     }
 
-    private fun applyApiUrl() {
-        val url = apiUrlInput.text.toString().trim()
-        if (url.isNotEmpty()) {
-            // Save to preferences
-            prefs.apiUrl = url
-
-            // Apply to API
-            TelemetryApi.setBaseUrl(url)
-
-            // Send video delay configuration to server
-            val videoDelayMs = prefs.videoDelayMs
-            lifecycleScope.launch {
-                val result = TelemetryApi.updateConfig(videoDelayMs)
-                result.onSuccess {
-                    Toast.makeText(this@MainActivity, "API URL updated (delay: ${videoDelayMs}ms)", Toast.LENGTH_SHORT).show()
-                }
-                result.onFailure {
-                    Toast.makeText(this@MainActivity, "API URL updated (config sync failed)", Toast.LENGTH_SHORT).show()
-                }
-            }
-
-            // Clear focus and hide keyboard
-            apiUrlInput.clearFocus()
-        }
-    }
-
     private fun setupClickListeners() {
         scanButton.setOnClickListener {
-            // Ensure API URL is applied
-            applyApiUrl()
-
             if (raceBoxManager?.isBluetoothEnabled() == true) {
-                raceBoxManager?.startScan()
+                showScanDialog()
             } else {
                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                 enableBluetoothLauncher.launch(enableBtIntent)
@@ -272,11 +210,73 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+    }
+
+    private fun showScanDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_scan_devices, null)
+        val devicesRecyclerView = dialogView.findViewById<RecyclerView>(R.id.devicesRecyclerView)
+        val scanStatusText = dialogView.findViewById<MaterialTextView>(R.id.scanStatusText)
+        val scanInfoButton = dialogView.findViewById<MaterialButton>(R.id.scanInfoButton)
+
+        // Info button click handler
+        scanInfoButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Device Selection")
+                .setMessage("Tap a device to connect to it.\n\nLong-press a device to set a custom alias (friendly name) for easy identification.")
+                .setPositiveButton("OK", null)
+                .show()
+        }
+
+        // Set up RecyclerView
+        devicesRecyclerView.layoutManager = LinearLayoutManager(this)
+
+        // Create device adapter with click handlers
+        // Use lateinit to avoid forward reference issue
+        lateinit var dialogDeviceAdapter: DeviceAdapter
+
+        dialogDeviceAdapter = DeviceAdapter(
+            onDeviceClick = { device ->
+                raceBoxManager?.stopScan()
+                raceBoxManager?.connect(device)
+                scanDialog?.dismiss()
+            },
+            onDeviceLongClick = { device ->
+                showDeviceAliasDialog(device, dialogDeviceAdapter)
+            }
+        )
+        devicesRecyclerView.adapter = dialogDeviceAdapter
+
+        // Create dialog
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setNegativeButton("Cancel") { _, _ ->
+                raceBoxManager?.stopScan()
+            }
+            .setOnCancelListener {
+                raceBoxManager?.stopScan()
+            }
+            .create()
+
+        // Save dialog reference
+        scanDialog = dialog
+
+        // Observe scan results and update the adapter
         lifecycleScope.launch {
             raceBoxManager?.scanResults?.collectLatest { devices ->
-                deviceAdapter.submitList(devices, raceBoxManager)
+                if (devices.isEmpty()) {
+                    scanStatusText.text = "Scanning for RaceBox devices..."
+                } else {
+                    scanStatusText.text = "Found ${devices.size} device(s)"
+                }
+                dialogDeviceAdapter.submitList(devices, raceBoxManager)
             }
         }
+
+        // Start scanning
+        raceBoxManager?.startScan()
+
+        // Show dialog
+        dialog.show()
     }
 
     private fun updateFieldVisibility() {
@@ -295,7 +295,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private fun showDeviceAliasDialog(device: BluetoothDevice) {
+    private fun showDeviceAliasDialog(device: BluetoothDevice, adapter: DeviceAdapter) {
         val dialogView = layoutInflater.inflate(R.layout.dialog_device_alias, null)
 
         val deviceInfoText = dialogView.findViewById<MaterialTextView>(R.id.deviceInfoText)
@@ -320,14 +320,14 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Alias saved", Toast.LENGTH_SHORT).show()
                     // Refresh the device list to show the new alias
                     raceBoxManager?.scanResults?.value?.let { devices ->
-                        deviceAdapter.submitList(devices, raceBoxManager)
+                        adapter.submitList(devices, raceBoxManager)
                     }
                 } else {
                     raceBoxManager?.removeDeviceAlias(device.address)
                     Toast.makeText(this, "Alias removed", Toast.LENGTH_SHORT).show()
                     // Refresh the device list
                     raceBoxManager?.scanResults?.value?.let { devices ->
-                        deviceAdapter.submitList(devices, raceBoxManager)
+                        adapter.submitList(devices, raceBoxManager)
                     }
                 }
             }
@@ -337,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Alias removed", Toast.LENGTH_SHORT).show()
                 // Refresh the device list
                 raceBoxManager?.scanResults?.value?.let { devices ->
-                    deviceAdapter.submitList(devices, raceBoxManager)
+                    adapter.submitList(devices, raceBoxManager)
                 }
             }
             .show()
@@ -455,6 +455,10 @@ class MainActivity : AppCompatActivity() {
     private fun showStreamDelayDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_stream_delay, null)
 
+        // Get API URL input
+        val apiUrlInput = dialogView.findViewById<TextInputEditText>(R.id.apiUrlInput)
+        apiUrlInput.setText(prefs.apiUrl)
+
         // Get video delay slider and label
         val videoDelaySlider = dialogView.findViewById<Slider>(R.id.videoDelaySlider)
         val videoDelayLabel = dialogView.findViewById<TextView>(R.id.videoDelayLabel)
@@ -521,6 +525,14 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setView(dialogView)
             .setPositiveButton("Save") { _, _ ->
+                // Save API URL
+                val newApiUrl = apiUrlInput.text.toString().trim()
+                if (newApiUrl.isNotEmpty()) {
+                    prefs.apiUrl = newApiUrl
+                    TelemetryApi.setBaseUrl(newApiUrl)
+                    Log.d("MainActivity", "API URL updated: $newApiUrl")
+                }
+
                 // Save video delay
                 val videoDelayMs = videoDelaySlider.value.toInt()
                 prefs.videoDelayMs = videoDelayMs
