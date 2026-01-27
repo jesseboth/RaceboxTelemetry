@@ -315,14 +315,6 @@
             const dot = document.getElementById('gForceDot');
             const radius = 66; // Half of 144px - 6px (half dot size)
 
-            // When stationary (speed = 0), keep dot centered
-            if (speed === 0) {
-                dot.style.left = '50%';
-                dot.style.top = '50%';
-                dot.className = 'g-force-dot';
-                return;
-            }
-
             // Calculate dot position
             // Lateral: positive = right, negative = left
             // Longitudinal: positive = forward (up), negative = brake (down)
@@ -336,8 +328,8 @@
             // Calculate total G-force
             const totalG = Math.sqrt(gLat * gLat + gLong * gLong);
 
-            // Update max G-force
-            if (totalG > maxGForce) {
+            // Update max G-force (only when moving to track actual driving forces)
+            if (speed > 0 && totalG > maxGForce) {
                 maxGForce = totalG;
                 document.getElementById('maxGForce').textContent = `Max: ${maxGForce.toFixed(1)}g`;
             }
@@ -387,6 +379,17 @@
             const now = Date.now();
             const targetTime = now - serverDelay;
 
+            // Check if we have any data old enough
+            const oldestDataTime = telemetryBuffer[0]._receivedAt;
+
+            // If buffer doesn't have data old enough, use the oldest available
+            if (oldestDataTime > targetTime) {
+                // Not enough data accumulated yet, display oldest (most delayed) available
+                const data = telemetryBuffer[0];
+                updateOverlay(data);
+                return; // Don't remove data yet, let more accumulate
+            }
+
             // Find the data point closest to our target time
             let closestIndex = -1;
             let closestDiff = Infinity;
@@ -406,8 +409,10 @@
                 const data = telemetryBuffer[closestIndex];
                 updateOverlay(data);
 
-                // Clean up old data we've already displayed
-                telemetryBuffer.splice(0, closestIndex);
+                // Clean up old data we've already displayed (including the displayed item)
+                if (closestIndex > 0) {
+                    telemetryBuffer.splice(0, closestIndex);
+                }
             }
         }
 

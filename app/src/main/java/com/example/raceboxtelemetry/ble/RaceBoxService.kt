@@ -31,10 +31,10 @@ class RaceBoxService : Service() {
     private lateinit var prefs: DataFieldPreferences
 
     private var dataSendingJob: Job? = null
-    private var lastSentTime = 0L
     private var consecutiveFailures = 0
     private var isSending = false
     private val MAX_CONSECUTIVE_FAILURES = 10
+    private var lastSentTime = 0L
 
     inner class LocalBinder : Binder() {
         fun getService(): RaceBoxService = this@RaceBoxService
@@ -70,28 +70,26 @@ class RaceBoxService : Service() {
     fun getRaceBoxManager(): RaceBoxManager = raceBoxManager
 
     private fun startDataCollection() {
-        Log.d(TAG, "Starting data collection")
+        Log.d(TAG, "Starting data collection at ${prefs.getFrequencyHz()} Hz (${prefs.sendIntervalMs}ms interval)")
         dataSendingJob = serviceScope.launch {
-            raceBoxManager.telemetryData.collectLatest { data ->
-                val sendIntervalMs = prefs.sendIntervalMs
+            raceBoxManager.telemetryData.collect { data ->
+                val now = System.currentTimeMillis()
+                val timeSinceLastSend = now - lastSentTime
 
-                Log.d(TAG, "Received telemetry data: Speed=${data.speed}, interval=${sendIntervalMs}ms")
-
-                val currentTime = System.currentTimeMillis()
-                if (currentTime - lastSentTime >= sendIntervalMs) {
-                    Log.d(TAG, "Sending telemetry to API...")
+                // Respect send interval preference
+                if (timeSinceLastSend >= prefs.sendIntervalMs) {
+                    Log.d(TAG, "Received telemetry data: Speed=${data.speed}")
                     sendTelemetryData(data)
-                    lastSentTime = currentTime
+                    lastSentTime = now
                 } else {
-                    val timeUntilNextSend = sendIntervalMs - (currentTime - lastSentTime)
-                    Log.d(TAG, "Skipping send, ${timeUntilNextSend}ms until next send")
+                    Log.d(TAG, "Skipping send (too soon: ${timeSinceLastSend}ms < ${prefs.sendIntervalMs}ms)")
                 }
             }
         }
 
         // Update notification when connection state changes
         serviceScope.launch {
-            raceBoxManager.connectionState.collectLatest { state ->
+            raceBoxManager.connectionState.collect { state ->
                 updateNotification(state)
             }
         }

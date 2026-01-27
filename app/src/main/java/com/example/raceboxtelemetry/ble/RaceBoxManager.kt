@@ -51,6 +51,10 @@ class RaceBoxManager(private val context: Context) {
     private var gLatZeroOffset: Double = 0.0
     private var gLongZeroOffset: Double = 0.0
 
+    // Device persistence for remembering connected devices and aliases
+    private val devicePersistence = DevicePersistence(context)
+    private var connectedDevice: BluetoothDevice? = null
+
     init {
         // Load saved zero offsets
         gLatZeroOffset = prefs.gLatZero.toDouble()
@@ -117,6 +121,11 @@ class RaceBoxManager(private val context: Context) {
                         }
                         _connectionState.value = ConnectionState.CONNECTED
                         Log.d(TAG, "Notifications enabled")
+
+                        // Save the connected device
+                        connectedDevice?.let { device ->
+                            devicePersistence.saveLastConnectedDevice(device.address, device.name ?: "Unknown")
+                        }
                     }
                 } else {
                     Log.e(TAG, "UART service not found")
@@ -170,6 +179,7 @@ class RaceBoxManager(private val context: Context) {
 
     fun connect(device: BluetoothDevice) {
         stopScan()
+        connectedDevice = device
         _connectionState.value = ConnectionState.CONNECTING
         bluetoothGatt = device.connectGatt(context, false, gattCallback)
         Log.d(TAG, "Connecting to ${device.name} (${device.address})")
@@ -179,6 +189,7 @@ class RaceBoxManager(private val context: Context) {
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
         bluetoothGatt = null
+        connectedDevice = null
         _connectionState.value = ConnectionState.DISCONNECTED
         Log.d(TAG, "Disconnected")
     }
@@ -368,5 +379,68 @@ class RaceBoxManager(private val context: Context) {
         gLongZeroOffset = 0.0
         prefs.resetGZero()
         Log.d(TAG, "G-meter zero reset")
+    }
+
+    /**
+     * Reconnect to the last connected device
+     */
+    fun reconnectToLastDevice(): Boolean {
+        val lastDevice = devicePersistence.getLastConnectedDevice()
+        if (lastDevice != null) {
+            val (address, name) = lastDevice
+            try {
+                val device = bluetoothAdapter?.getRemoteDevice(address)
+                if (device != null) {
+                    connect(device)
+                    Log.d(TAG, "Reconnecting to last device: $name ($address)")
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to reconnect to last device", e)
+            }
+        }
+        return false
+    }
+
+    /**
+     * Get the last connected device info
+     */
+    fun getLastConnectedDevice(): Pair<String?, String?>? {
+        return devicePersistence.getLastConnectedDevice()
+    }
+
+    /**
+     * Check if there is a last connected device available
+     */
+    fun hasLastConnectedDevice(): Boolean {
+        return devicePersistence.getLastConnectedDevice() != null
+    }
+
+    /**
+     * Save an alias for a device
+     */
+    fun saveDeviceAlias(address: String, alias: String) {
+        devicePersistence.saveDeviceAlias(address, alias)
+    }
+
+    /**
+     * Get alias for a device
+     */
+    fun getDeviceAlias(address: String): String? {
+        return devicePersistence.getDeviceAlias(address)
+    }
+
+    /**
+     * Get all device aliases
+     */
+    fun getAllDeviceAliases(): Map<String, String> {
+        return devicePersistence.getDeviceAliases()
+    }
+
+    /**
+     * Remove alias for a device
+     */
+    fun removeDeviceAlias(address: String) {
+        devicePersistence.removeDeviceAlias(address)
     }
 }

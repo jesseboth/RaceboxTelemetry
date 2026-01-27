@@ -32,11 +32,22 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Scan for RaceBox"
-        app:layout_constraintEnd_toStartOf="@+id/disconnectButton"
+        android:text="Scan"
+        app:layout_constraintEnd_toStartOf="@+id/connectButton"
         app:layout_constraintHorizontal_chainStyle="spread"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/apiUrlLayout" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/connectButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:enabled="false"
+        android:text="Connect"
+        app:layout_constraintBaseline_toBaselineOf="@+id/scanButton"
+        app:layout_constraintEnd_toStartOf="@+id/disconnectButton"
+        app:layout_constraintStart_toEndOf="@+id/scanButton" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/disconnectButton"
@@ -47,7 +58,7 @@
         android:text="Disconnect"
         app:layout_constraintBaseline_toBaselineOf="@+id/scanButton"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@+id/scanButton" />
+        app:layout_constraintStart_toEndOf="@+id/connectButton" />
 
     <com.google.android.material.textview.MaterialTextView
         android:id="@+id/statusText"

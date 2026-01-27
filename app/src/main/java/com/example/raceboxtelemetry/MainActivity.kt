@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apiUrlLayout: TextInputLayout
     private lateinit var apiUrlInput: TextInputEditText
     private lateinit var scanButton: MaterialButton
+    private lateinit var connectButton: MaterialButton
     private lateinit var disconnectButton: MaterialButton
     private lateinit var zeroGMeterButton: MaterialButton
     private lateinit var statusText: MaterialTextView
@@ -61,9 +62,14 @@ class MainActivity : AppCompatActivity() {
     private var serviceBound = false
     private lateinit var prefs: DataFieldPreferences
 
-    private val deviceAdapter = DeviceAdapter { device ->
-        raceBoxManager?.connect(device)
-    }
+    private val deviceAdapter = DeviceAdapter(
+        onDeviceClick = { device ->
+            raceBoxManager?.connect(device)
+        },
+        onDeviceLongClick = { device ->
+            showDeviceAliasDialog(device)
+        }
+    )
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -123,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         apiUrlLayout = findViewById(R.id.apiUrlLayout)
         apiUrlInput = findViewById(R.id.apiUrlInput)
         scanButton = findViewById(R.id.scanButton)
+        connectButton = findViewById(R.id.connectButton)
         disconnectButton = findViewById(R.id.disconnectButton)
         zeroGMeterButton = findViewById(R.id.zeroGMeterButton)
         statusText = findViewById(R.id.statusText)
@@ -209,6 +216,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        connectButton.setOnClickListener {
+            // Reconnect to the last connected device
+            val success = raceBoxManager?.reconnectToLastDevice() ?: false
+            if (!success) {
+                Toast.makeText(this, "No previous device found. Please scan for devices.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         disconnectButton.setOnClickListener {
             raceBoxManager?.disconnect()
         }
@@ -233,6 +248,10 @@ class MainActivity : AppCompatActivity() {
                 statusText.text = "Status: ${state.name}"
                 disconnectButton.isEnabled = state == RaceBoxManager.ConnectionState.CONNECTED
                 scanButton.isEnabled = state == RaceBoxManager.ConnectionState.DISCONNECTED
+
+                // Enable connect button only when disconnected and there's a last device
+                val hasLastDevice = raceBoxManager?.hasLastConnectedDevice() ?: false
+                connectButton.isEnabled = state == RaceBoxManager.ConnectionState.DISCONNECTED && hasLastDevice
             }
         }
 
@@ -254,7 +273,7 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             raceBoxManager?.scanResults?.collectLatest { devices ->
-                deviceAdapter.submitList(devices)
+                deviceAdapter.submitList(devices, raceBoxManager)
             }
         }
     }
@@ -272,6 +291,55 @@ class MainActivity : AppCompatActivity() {
         fields.forEach { (view, enabled) ->
             view.visibility = if (enabled) View.VISIBLE else View.GONE
         }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun showDeviceAliasDialog(device: BluetoothDevice) {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_device_alias, null)
+
+        val deviceInfoText = dialogView.findViewById<MaterialTextView>(R.id.deviceInfoText)
+        val aliasInput = dialogView.findViewById<TextInputEditText>(R.id.aliasInput)
+
+        // Set device info
+        deviceInfoText.text = "Set alias for ${device.name ?: "Unknown"} (${device.address})"
+
+        // Load existing alias if available
+        val currentAlias = raceBoxManager?.getDeviceAlias(device.address)
+        if (currentAlias != null) {
+            aliasInput.setText(currentAlias)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Device Alias")
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                val alias = aliasInput.text.toString().trim()
+                if (alias.isNotEmpty()) {
+                    raceBoxManager?.saveDeviceAlias(device.address, alias)
+                    Toast.makeText(this, "Alias saved", Toast.LENGTH_SHORT).show()
+                    // Refresh the device list to show the new alias
+                    raceBoxManager?.scanResults?.value?.let { devices ->
+                        deviceAdapter.submitList(devices, raceBoxManager)
+                    }
+                } else {
+                    raceBoxManager?.removeDeviceAlias(device.address)
+                    Toast.makeText(this, "Alias removed", Toast.LENGTH_SHORT).show()
+                    // Refresh the device list
+                    raceBoxManager?.scanResults?.value?.let { devices ->
+                        deviceAdapter.submitList(devices, raceBoxManager)
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Remove") { _, _ ->
+                raceBoxManager?.removeDeviceAlias(device.address)
+                Toast.makeText(this, "Alias removed", Toast.LENGTH_SHORT).show()
+                // Refresh the device list
+                raceBoxManager?.scanResults?.value?.let { devices ->
+                    deviceAdapter.submitList(devices, raceBoxManager)
+                }
+            }
+            .show()
     }
 
     private fun checkPermissions() {
@@ -344,9 +412,10 @@ class MainActivity : AppCompatActivity() {
         checkboxes.forEach { (checkbox, value) -> checkbox.isChecked = value }
 
         // Set frequency slider from current preference
-        val currentFrequency = prefs.getFrequencyHz()
+        // Round to nearest integer since slider uses stepSize=1
+        val currentFrequency = prefs.getFrequencyHz().toInt()
         frequencySlider.value = currentFrequency.toFloat()
-        updateFrequencyLabel(frequencyLabel, currentFrequency.toInt())
+        updateFrequencyLabel(frequencyLabel, currentFrequency)
 
         // Update label as slider moves
         frequencySlider.addOnChangeListener { _, value, _ ->
@@ -449,13 +518,16 @@ class MainActivity : AppCompatActivity() {
 }
 
 class DeviceAdapter(
-    private val onDeviceClick: (BluetoothDevice) -> Unit
+    private val onDeviceClick: (BluetoothDevice) -> Unit,
+    private val onDeviceLongClick: (BluetoothDevice) -> Unit
 ) : RecyclerView.Adapter<DeviceAdapter.DeviceViewHolder>() {
 
     private var devices = listOf<BluetoothDevice>()
+    private var raceBoxManager: RaceBoxManager? = null
 
-    fun submitList(newDevices: List<BluetoothDevice>) {
+    fun submitList(newDevices: List<BluetoothDevice>, manager: RaceBoxManager? = null) {
         devices = newDevices
+        raceBoxManager = manager
         notifyDataSetChanged()
     }
 
@@ -477,9 +549,21 @@ class DeviceAdapter(
 
         @android.annotation.SuppressLint("MissingPermission")
         fun bind(device: BluetoothDevice) {
-            text1.text = device.name ?: "Unknown"
+            // Try to get alias, otherwise use device name
+            val alias = raceBoxManager?.getDeviceAlias(device.address)
+            val deviceName = device.name ?: "Unknown"
+
+            text1.text = if (alias != null) {
+                "$alias ($deviceName)"
+            } else {
+                deviceName
+            }
             text2.text = device.address
             itemView.setOnClickListener { onDeviceClick(device) }
+            itemView.setOnLongClickListener {
+                onDeviceLongClick(device)
+                true
+            }
         }
     }
 }

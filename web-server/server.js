@@ -69,12 +69,20 @@ wss.on('connection', (ws) => {
 
 // Broadcast telemetry to all connected WebSocket clients
 function broadcastTelemetry(data) {
+    if (wsClients.size === 0) {
+        log('No WebSocket clients connected - data not broadcasted');
+        return;
+    }
+
     const message = JSON.stringify({ type: 'telemetry', data });
+    let sentCount = 0;
     wsClients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
             client.send(message);
+            sentCount++;
         }
     });
+    log(`Broadcasted telemetry to ${sentCount}/${wsClients.size} clients`);
 }
 
 // Broadcast config update to all connected WebSocket clients
