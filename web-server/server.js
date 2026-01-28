@@ -68,6 +68,20 @@ wss.on('connection', (ws) => {
     });
 });
 
+// Broadcast message to all connected WebSocket clients
+function broadcastMessage(message) {
+    if (wsClients.size === 0) {
+        return;
+    }
+
+    const messageStr = JSON.stringify(message);
+    wsClients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(messageStr);
+        }
+    });
+}
+
 // Broadcast telemetry to all connected WebSocket clients
 function broadcastTelemetry(data) {
     if (wsClients.size === 0) {
@@ -129,6 +143,9 @@ function startSession() {
         console.log('=== NEW SESSION STARTED ===');
         log('Session ID:', currentSession.id);
         log('Start time:', currentSession.startTime);
+
+        // Broadcast session start to clients (so they can reset their max g-force)
+        broadcastMessage({ type: 'session-start', sessionId: currentSession.id });
     }
 }
 
@@ -338,6 +355,17 @@ app.post('/session/end', (req, res) => {
             message: 'No active session'
         });
     }
+});
+
+// POST /max-gforce/reset - Reset max g-force tracking
+app.post('/max-gforce/reset', (req, res) => {
+    log('Broadcasting max g-force reset to all clients');
+    // Broadcast reset message to all clients
+    broadcastMessage({ type: 'reset-max-gforce' });
+    res.json({
+        status: 'ok',
+        message: 'Max g-force reset broadcast to all clients'
+    });
 });
 
 // GET /archive - List archived sessions

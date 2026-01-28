@@ -294,6 +294,15 @@
         </div>
 
         <div class="card">
+            <h2>Max G-Force Reset</h2>
+            <p style="color: #aaa; font-size: 14px; margin-bottom: 16px;">
+                Reset the maximum g-force tracking shown on the overlay.
+            </p>
+            <button class="btn" id="resetMaxGButton">Reset Max G-Force</button>
+            <div id="statusMessageMaxG" class="status hidden"></div>
+        </div>
+
+        <div class="card">
             <h2>Server Information</h2>
             <div class="info-grid">
                 <div class="info-item">
@@ -353,6 +362,8 @@
         const dataPoints = document.getElementById('dataPoints');
         const uptime = document.getElementById('uptime');
         const overlayUrl = document.getElementById('overlayUrl');
+        const resetMaxGButton = document.getElementById('resetMaxGButton');
+        const statusMessageMaxG = document.getElementById('statusMessageMaxG');
 
         // Debounce timers for live updates
         let delayDebounceTimer = null;
@@ -604,6 +615,45 @@
                 }, 5000);
             }
         }
+
+        function showMaxGStatus(message, type) {
+            statusMessageMaxG.textContent = message;
+            statusMessageMaxG.className = `status ${type}`;
+            statusMessageMaxG.classList.remove('hidden');
+
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusMessageMaxG.classList.add('hidden');
+                }, 5000);
+            }
+        }
+
+        // Reset max g-force
+        async function resetMaxGForce() {
+            try {
+                resetMaxGButton.disabled = true;
+                showMaxGStatus('Resetting...', 'info');
+
+                const response = await fetch(`${API_URL}/max-gforce/reset`, {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showMaxGStatus('✓ Max g-force has been reset', 'success');
+                } else {
+                    showMaxGStatus(`Error: ${result.message}`, 'error');
+                }
+            } catch (e) {
+                showMaxGStatus(`Failed: ${e.message}`, 'error');
+            } finally {
+                resetMaxGButton.disabled = false;
+            }
+        }
+
+        // Add click handler for reset button
+        resetMaxGButton.addEventListener('click', resetMaxGForce);
 
         // Set overlay URL
         overlayUrl.textContent = `${window.location.origin}/`;

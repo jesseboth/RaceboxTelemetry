@@ -483,10 +483,12 @@ class MainActivity : AppCompatActivity() {
         val frequencyLabel = dialogView.findViewById<TextView>(R.id.frequencyLabel)
         val frequencyInfoButton = dialogView.findViewById<MaterialButton>(R.id.frequencyInfoButton)
 
-        // Set current video delay from preference
+
+        // Set current video delay from preference (round to nearest 100ms for slider)
         val currentVideoDelay = prefs.videoDelayMs
-        videoDelaySlider.value = currentVideoDelay.toFloat()
-        updateVideoDelayLabel(videoDelayLabel, currentVideoDelay)
+        val roundedVideoDelay = ((currentVideoDelay + 50) / 100) * 100
+        videoDelaySlider.value = roundedVideoDelay.toFloat()
+        updateVideoDelayLabel(videoDelayLabel, roundedVideoDelay)
 
         // Set current frequency from preference
         val currentFrequency = prefs.getFrequencyHz().toInt()
