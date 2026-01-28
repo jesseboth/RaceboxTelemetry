@@ -61,35 +61,48 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/statusText">
 
-        <LinearLayout
+        <androidx.constraintlayout.widget.ConstraintLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
             android:padding="16dp">
 
             <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/telemetryTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Telemetry Data"
                 android:textSize="18sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <com.example.raceboxtelemetry.ui.BatteryIndicatorView
+                android:id="@+id/batteryIndicator"
+                android:layout_width="28dp"
+                android:layout_height="12dp"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
 
             <com.example.raceboxtelemetry.ui.GForceMeterView
                 android:id="@+id/gForceMeter"
                 android:layout_width="180dp"
                 android:layout_height="180dp"
                 android:layout_marginTop="16dp"
-                android:layout_gravity="center_horizontal" />
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/telemetryTitle" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/zeroGMeterButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center_horizontal"
                 android:layout_marginTop="8dp"
                 android:text="Zero G-Meter"
                 android:textSize="12sp"
-                style="@style/Widget.Material3.Button.TextButton" />
+                style="@style/Widget.Material3.Button.TextButton"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/gForceMeter" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/speedText"
@@ -97,7 +110,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
                 android:text="Speed: 0.0 km/h"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/zeroGMeterButton" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/gLatText"
@@ -105,7 +120,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="G-Lat: 0.00"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/speedText" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/gLongText"
@@ -113,7 +130,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="G-Long: 0.00"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/gLatText" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/latitudeText"
@@ -121,7 +140,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Latitude: 0.000000"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/gLongText" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/longitudeText"
@@ -129,7 +150,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Longitude: 0.000000"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/latitudeText" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/satellitesText"
@@ -137,7 +160,9 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Satellites: 0"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/longitudeText" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/timestampText"
@@ -145,8 +170,11 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Timestamp: --"
-                android:textSize="16sp" />
-        </LinearLayout>
+                android:textSize="16sp"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/satellitesText"
+                app:layout_constraintBottom_toBottomOf="parent" />
+        </androidx.constraintlayout.widget.ConstraintLayout>
     </com.google.android.material.card.MaterialCardView>
 
 

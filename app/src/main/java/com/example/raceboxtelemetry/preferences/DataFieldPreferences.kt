@@ -25,6 +25,8 @@ class DataFieldPreferences(context: Context) {
         private const val KEY_VIDEO_DELAY = "video_delay_ms"
         private const val KEY_G_LAT_ZERO = "g_lat_zero"
         private const val KEY_G_LONG_ZERO = "g_long_zero"
+        private const val KEY_TILT_ROLL = "tilt_roll"
+        private const val KEY_TILT_PITCH = "tilt_pitch"
 
         // Default values (speed and g-meter enabled by default)
         private const val DEFAULT_SPEED = true
@@ -98,11 +100,22 @@ class DataFieldPreferences(context: Context) {
         get() = prefs.getFloat(KEY_G_LONG_ZERO, 0.0f)
         set(value) = prefs.edit().putFloat(KEY_G_LONG_ZERO, value).apply()
 
-    // Reset G-force zero offsets
+    // Tilt compensation angles (in radians)
+    var tiltRoll: Float
+        get() = prefs.getFloat(KEY_TILT_ROLL, 0.0f)
+        set(value) = prefs.edit().putFloat(KEY_TILT_ROLL, value).apply()
+
+    var tiltPitch: Float
+        get() = prefs.getFloat(KEY_TILT_PITCH, 0.0f)
+        set(value) = prefs.edit().putFloat(KEY_TILT_PITCH, value).apply()
+
+    // Reset G-force zero offsets and tilt compensation
     fun resetGZero() {
         prefs.edit()
             .putFloat(KEY_G_LAT_ZERO, 0.0f)
             .putFloat(KEY_G_LONG_ZERO, 0.0f)
+            .putFloat(KEY_TILT_ROLL, 0.0f)
+            .putFloat(KEY_TILT_PITCH, 0.0f)
             .apply()
     }
 

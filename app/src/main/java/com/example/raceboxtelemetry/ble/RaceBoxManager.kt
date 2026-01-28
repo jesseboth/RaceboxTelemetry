@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.*
+import kotlin.math.*
 
 @SuppressLint("MissingPermission")
 class RaceBoxManager(private val context: Context) {
@@ -50,15 +51,27 @@ class RaceBoxManager(private val context: Context) {
     private val prefs = DataFieldPreferences(context)
     private var gLatZeroOffset: Double = 0.0
     private var gLongZeroOffset: Double = 0.0
+    private var gZZeroOffset: Double = 0.0
+
+    // Tilt compensation angles (in radians)
+    private var tiltRoll: Double = 0.0  // Rotation around longitudinal axis
+    private var tiltPitch: Double = 0.0 // Rotation around lateral axis
+
+    // Store last raw sensor readings (before any correction) for zeroing
+    private var lastRawGLat: Double = 0.0
+    private var lastRawGLong: Double = 0.0
+    private var lastRawGZ: Double = 0.0  // Vertical axis
 
     // Device persistence for remembering connected devices and aliases
     private val devicePersistence = DevicePersistence(context)
     private var connectedDevice: BluetoothDevice? = null
 
     init {
-        // Load saved zero offsets
+        // Load saved zero offsets and tilt angles
         gLatZeroOffset = prefs.gLatZero.toDouble()
         gLongZeroOffset = prefs.gLongZero.toDouble()
+        tiltRoll = prefs.tiltRoll.toDouble()
+        tiltPitch = prefs.tiltPitch.toDouble()
     }
 
     enum class ConnectionState {
@@ -294,6 +307,12 @@ class RaceBoxManager(private val context: Context) {
 
         val gLat = gForceY / 1000.0  // Convert milli-g to g
         val gLong = gForceX / 1000.0 // Convert milli-g to g
+        val gZ = gForceZ / 1000.0    // Convert milli-g to g
+
+        // Store raw sensor readings for zeroing
+        lastRawGLat = gLat
+        lastRawGLong = gLong
+        lastRawGZ = gZ
 
         // GPS coordinates: Int32 with factor of 10^7
         val lonRaw = buffer.getInt(payloadOffset + 24)
@@ -303,6 +322,12 @@ class RaceBoxManager(private val context: Context) {
 
         // Satellites
         val satellites = data[payloadOffset + 23].toInt() and 0xFF
+
+        // Battery Status (offset 67 from payload start = offset 73 in full packet)
+        val batteryByte = data[payloadOffset + 67].toInt() and 0xFF
+        val batteryLevel = batteryByte and 0x7F  // Lower 7 bits = battery percentage
+        val isCharging = (batteryByte and 0x80) != 0  // Bit 7 = charging status
+        val inputVoltage = batteryByte / 10.0  // For Micro: voltage in volts
 
         // Validate values
         if (speedKmh < 0 || speedKmh > 500) {
@@ -320,9 +345,21 @@ class RaceBoxManager(private val context: Context) {
             return
         }
 
-        // Apply zero offsets to G-force readings
-        val gLatCorrected = gLat - gLatZeroOffset
-        val gLongCorrected = gLong - gLongZeroOffset
+        // Apply tilt compensation and zero offsets to G-force readings
+        // Strategy: rotate raw readings to level frame first, then subtract offsets
+
+        // Apply rotation to transform to level reference frame
+        val (gLatRotated, gLongRotated) = applyTiltCompensation(gLat, gLong, gZ)
+
+        // Now subtract offsets (which were also calculated in level frame)
+        val gLatCorrected = gLatRotated - gLatZeroOffset
+        val gLongCorrected = gLongRotated - gLongZeroOffset
+
+        // Debug logging for tilt compensation
+        if (tiltRoll != 0.0 || tiltPitch != 0.0) {
+            Log.d(TAG, "Tilt compensation: raw(${"%3f".format(gLat)}, ${"%.3f".format(gLong)}, ${"%.3f".format(gZ)}) → rotated(${"%.3f".format(gLatRotated)}, ${"%.3f".format(gLongRotated)}) → final(${"%.3f".format(gLatCorrected)}, ${"%.3f".format(gLongCorrected)})")
+            Log.d(TAG, "Tilt angles: roll=${"%.1f".format(Math.toDegrees(tiltRoll))}°, pitch=${"%.1f".format(Math.toDegrees(tiltPitch))}°")
+        }
 
         val currentData = _telemetryData.value
         _telemetryData.value = currentData.copy(
@@ -332,10 +369,13 @@ class RaceBoxManager(private val context: Context) {
             latitude = latitude,
             longitude = longitude,
             satellites = satellites,
+            batteryLevel = batteryLevel,
+            isCharging = isCharging,
+            inputVoltage = inputVoltage,
             timestamp = System.currentTimeMillis()
         )
 
-        Log.d(TAG, "Parsed UBX: Speed=${"%.1f".format(speedKmh)} km/h, G-Lat=${"%.2f".format(gLat)}, G-Long=${"%.2f".format(gLong)}, Lat=${"%.6f".format(latitude)}, Lon=${"%.6f".format(longitude)}, Sats=$satellites")
+        Log.d(TAG, "Parsed UBX: Speed=${"%.1f".format(speedKmh)} km/h, G-Lat=${"%.2f".format(gLat)}→${"%.2f".format(gLatCorrected)}, G-Long=${"%.2f".format(gLong)}→${"%.2f".format(gLongCorrected)}, Lat=${"%.6f".format(latitude)}, Lon=${"%.6f".format(longitude)}, Sats=$satellites")
     }
 
     private fun parseCoordinate(value: String, direction: String): Double {
@@ -356,29 +396,94 @@ class RaceBoxManager(private val context: Context) {
     fun isBluetoothEnabled(): Boolean = bluetoothAdapter?.isEnabled == true
 
     /**
+     * Apply tilt compensation to g-force readings using simple scaling.
+     *
+     * When tilted, the sensor's sensitivity is reduced by cos(tilt_angle) for each axis.
+     * We scale by 1/cos(angle) to restore full sensitivity.
+     *
+     * @param gLat Lateral g-force (raw sensor reading)
+     * @param gLong Longitudinal g-force (raw sensor reading)
+     * @param gZ Vertical g-force (raw sensor reading)
+     * @return Pair of (compensated gLat, compensated gLong)
+     */
+    private fun applyTiltCompensation(gLat: Double, gLong: Double, gZ: Double): Pair<Double, Double> {
+        // If no tilt compensation is active, return original values
+        if (tiltRoll == 0.0 && tiltPitch == 0.0) {
+            return Pair(gLat, gLong)
+        }
+
+        // Calculate scaling factors based on tilt angles
+        // When tilted by angle θ, sensitivity is reduced by cos(θ)
+        // So we multiply by 1/cos(θ) to restore it
+        val rollScaleFactor = if (abs(tiltRoll) < PI / 2) {
+            1.0 / cos(tiltRoll)
+        } else {
+            1.0 // Don't compensate for extreme tilts
+        }
+
+        val pitchScaleFactor = if (abs(tiltPitch) < PI / 2) {
+            1.0 / cos(tiltPitch)
+        } else {
+            1.0 // Don't compensate for extreme tilts
+        }
+
+        // Apply scaling to restore sensitivity
+        val gLatCompensated = gLat * rollScaleFactor
+        val gLongCompensated = gLong * pitchScaleFactor
+
+        return Pair(gLatCompensated, gLongCompensated)
+    }
+
+    /**
      * Zero the G-meter by setting current G-force readings as the zero point.
-     * This calibrates for when the device is mounted at an angle.
+     * This calibrates for when the device is mounted at an angle with tilt compensation.
+     *
+     * Uses the current gravity vector to calculate tilt angles and applies rotation
+     * matrix compensation to maintain consistent sensitivity regardless of mounting angle.
      */
     fun zeroGMeter() {
-        val currentData = _telemetryData.value
-        gLatZeroOffset = currentData.gLat + gLatZeroOffset
-        gLongZeroOffset = currentData.gLong + gLongZeroOffset
+        // Use the last raw sensor readings (before any correction was applied)
+        val rawGLat = lastRawGLat
+        val rawGLong = lastRawGLong
+        val rawGZ = lastRawGZ
+
+        // Calculate tilt angles from gravity vector
+        // Roll: rotation around longitudinal (forward) axis - tilting left/right
+        // Pitch: rotation around lateral (side) axis - tilting forward/back
+        tiltRoll = atan2(rawGLat, rawGZ)
+        tiltPitch = atan2(rawGLong, rawGZ)
+
+        // Rotate the current readings to level frame to get the offsets
+        // This way, when we apply the same rotation to future readings and subtract
+        // these offsets, stationary readings at this angle will become (0, 0)
+        val (gLatLevel, gLongLevel) = applyTiltCompensation(rawGLat, rawGLong, rawGZ)
+
+        // Store the level-frame readings as offsets
+        gLatZeroOffset = gLatLevel
+        gLongZeroOffset = gLongLevel
 
         // Save to preferences
         prefs.gLatZero = gLatZeroOffset.toFloat()
         prefs.gLongZero = gLongZeroOffset.toFloat()
+        prefs.tiltRoll = tiltRoll.toFloat()
+        prefs.tiltPitch = tiltPitch.toFloat()
 
-        Log.d(TAG, "G-meter zeroed: gLatOffset=${"%.3f".format(gLatZeroOffset)}, gLongOffset=${"%.3f".format(gLongZeroOffset)}")
+        Log.d(TAG, "G-meter zeroed with tilt compensation:")
+        Log.d(TAG, "  Raw readings: gLat=${"%.3f".format(rawGLat)}, gLong=${"%.3f".format(rawGLong)}, gZ=${"%.3f".format(rawGZ)}")
+        Log.d(TAG, "  Level frame: gLat=${"%.3f".format(gLatLevel)}, gLong=${"%.3f".format(gLongLevel)}")
+        Log.d(TAG, "  Tilt angles: roll=${"%.1f".format(Math.toDegrees(tiltRoll))}°, pitch=${"%.1f".format(Math.toDegrees(tiltPitch))}°")
     }
 
     /**
-     * Reset G-meter zero offsets to default (no offset)
+     * Reset G-meter zero offsets and tilt compensation to default
      */
     fun resetGZero() {
         gLatZeroOffset = 0.0
         gLongZeroOffset = 0.0
+        tiltRoll = 0.0
+        tiltPitch = 0.0
         prefs.resetGZero()
-        Log.d(TAG, "G-meter zero reset")
+        Log.d(TAG, "G-meter zero and tilt compensation reset")
     }
 
     /**

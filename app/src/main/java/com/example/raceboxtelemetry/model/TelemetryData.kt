@@ -34,5 +34,8 @@ data class RaceBoxData(
     val altitude: Double = 0.0,
     val satellites: Int = 0,
     val heading: Double = 0.0,
+    val batteryLevel: Int = 0,       // Battery percentage (0-100) for Mini/Mini S, or 0 if not available
+    val isCharging: Boolean = false,  // True if charging (Mini/Mini S only)
+    val inputVoltage: Double = 0.0,   // Input voltage for Micro (in volts), or 0 if not applicable
     val timestamp: Long = System.currentTimeMillis()
 )

@@ -32,6 +32,7 @@ import com.example.raceboxtelemetry.ble.RaceBoxService
 import com.example.raceboxtelemetry.api.TelemetryApi
 import com.example.raceboxtelemetry.preferences.DataFieldPreferences
 import com.example.raceboxtelemetry.ui.GForceMeterView
+import com.example.raceboxtelemetry.ui.BatteryIndicatorView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
@@ -54,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var longitudeText: MaterialTextView
     private lateinit var satellitesText: MaterialTextView
     private lateinit var timestampText: MaterialTextView
+    private lateinit var batteryIndicator: BatteryIndicatorView
 
     private var raceBoxService: RaceBoxService? = null
     private var raceBoxManager: RaceBoxManager? = null
@@ -129,6 +131,7 @@ class MainActivity : AppCompatActivity() {
         longitudeText = findViewById(R.id.longitudeText)
         satellitesText = findViewById(R.id.satellitesText)
         timestampText = findViewById(R.id.timestampText)
+        batteryIndicator = findViewById(R.id.batteryIndicator)
 
         // Load saved API URL from preferences and apply it
         val savedUrl = prefs.apiUrl
@@ -207,6 +210,17 @@ class MainActivity : AppCompatActivity() {
                 longitudeText.text = "Longitude: %.6f".format(data.longitude)
                 satellitesText.text = "Satellites: %d".format(data.satellites)
                 timestampText.text = "Timestamp: %s".format(data.timestamp ?: "--")
+
+                // Update battery indicator
+                if (data.batteryLevel > 0 || data.inputVoltage > 0) {
+                    // For Micro, convert voltage to percentage (12V = 100%, 11V = 0%)
+                    val displayLevel = if (data.batteryLevel > 0) {
+                        data.batteryLevel
+                    } else {
+                        ((data.inputVoltage - 11.0) * 100).toInt().coerceIn(0, 100)
+                    }
+                    batteryIndicator.setBatteryLevel(displayLevel, data.isCharging)
+                }
             }
         }
 
