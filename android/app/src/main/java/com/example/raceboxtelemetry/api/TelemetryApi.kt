@@ -53,9 +53,8 @@ object TelemetryApi {
 
     fun getService(): TelemetryApiService {
         if (apiService == null) {
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
-            }
+            val logging = HttpLoggingInterceptor()
+            logging.level = HttpLoggingInterceptor.Level.BODY
 
             val client = OkHttpClient.Builder()
                 .addInterceptor(logging)

@@ -294,10 +294,17 @@
 
         let errorCount = 0;
         const MAX_ERRORS = 5;
-        let serverDelay = 1500;
+        let serverDelay = 1000; // Default for 360p RTMP over ethernet
         let ws = null;
         let reconnectTimeout = null;
         let displayInterval = null;
+
+        // RTMP sync state
+        let rtmpSyncInfo = null;
+        let rtmpSyncEnabled = false;
+        let clockOffset = 0; // Phone clock offset from server (server_time - phone_time)
+        let clockOffsetSamples = []; // Track multiple samples for stability
+        const MAX_CLOCK_OFFSET_SAMPLES = 10;
 
         // Max g-force data (tracked client-side from delayed data)
         let maxGForceData = {
@@ -305,6 +312,10 @@
             g_long: 0,
             magnitude: 0
         };
+
+        // Max g-force reset timer
+        let maxGResetIntervalMin = 5; // Default 5 minutes
+        let maxGResetTimer = null;
 
         // localStorage key for max g-force
         const MAX_GFORCE_STORAGE_KEY = 'raceboxMaxGForce';
@@ -344,6 +355,31 @@
             console.log('Max g-force reset');
         }
 
+        // Start/restart the max g-force reset timer
+        function restartMaxGResetTimer() {
+            // Clear existing timer
+            if (maxGResetTimer) {
+                clearTimeout(maxGResetTimer);
+            }
+
+            // Set new timer for the configured interval
+            const intervalMs = maxGResetIntervalMin * 60 * 1000;
+            maxGResetTimer = setTimeout(() => {
+                console.log(`Auto-resetting max g-force after ${maxGResetIntervalMin} minutes`);
+                resetMaxGForce();
+            }, intervalMs);
+
+            console.log(`Max g-force will auto-reset in ${maxGResetIntervalMin} minutes`);
+        }
+
+        // Stop the max g-force reset timer
+        function stopMaxGResetTimer() {
+            if (maxGResetTimer) {
+                clearTimeout(maxGResetTimer);
+                maxGResetTimer = null;
+            }
+        }
+
         // Telemetry buffer for delay sync
         const telemetryBuffer = [];
         const MAX_BUFFER_SIZE = 500; // Keep ~10 seconds of data at 50Hz
@@ -354,6 +390,12 @@
                 const response = await fetch(`${API_URL}/config`);
                 const config = await response.json();
                 serverDelay = config.video_delay_ms;
+
+                // Load max g-force reset interval
+                if (config.max_g_reset_interval_min !== undefined) {
+                    maxGResetIntervalMin = config.max_g_reset_interval_min;
+                    console.log(`Max g-force reset interval: ${maxGResetIntervalMin} minutes`);
+                }
 
                 // Allow URL parameter to override delay for testing
                 const urlParams = new URLSearchParams(window.location.search);
@@ -369,6 +411,38 @@
             } catch (e) {
                 console.error('Failed to load config:', e);
             }
+        }
+
+        // Load RTMP sync info from server
+        async function loadRtmpSync() {
+            try {
+                const response = await fetch(`${API_URL}/rtmp/sync`);
+                const syncData = await response.json();
+
+                if (syncData.sync_available && syncData.rtmp.is_live) {
+                    rtmpSyncInfo = syncData.rtmp;
+                    rtmpSyncEnabled = true;
+                    console.log('RTMP sync enabled - stream start time:', rtmpSyncInfo.stream_start_time_unix_ms);
+                    console.log('RTMP sync mode: using video timestamps instead of delay-based sync');
+                } else {
+                    console.log('RTMP sync not available - using delay-based sync');
+                    rtmpSyncEnabled = false;
+                }
+            } catch (e) {
+                console.error('Failed to load RTMP sync info:', e);
+                rtmpSyncEnabled = false;
+            }
+        }
+
+        // Calculate video timestamp for telemetry point (RTMP sync mode)
+        function calculateVideoTimestamp(telemetryTimestamp) {
+            if (!rtmpSyncEnabled || !rtmpSyncInfo) {
+                return null;
+            }
+
+            // Calculate offset: how many milliseconds into the video stream this telemetry point should appear
+            const videoTimestamp = telemetryTimestamp - rtmpSyncInfo.stream_start_time_unix_ms;
+            return videoTimestamp;
         }
 
         function getGForceClass(totalG) {
@@ -442,6 +516,8 @@
                     };
                     saveMaxGForce();
                     updateMaxGForceDisplay();
+                    // Restart the auto-reset timer when a new max is set
+                    restartMaxGResetTimer();
                 }
             }
 
@@ -453,10 +529,82 @@
 
         // Add telemetry to buffer with timestamp
         function bufferTelemetry(data) {
+            const receivedAt = Date.now();
+
             const bufferedData = {
                 ...data,
-                _receivedAt: Date.now()
+                _receivedAt: receivedAt
             };
+
+            // Update clock offset with running average (for stability and drift compensation)
+            if (data.timestamp) {
+                // Validate timestamp is reasonable (within 15 seconds of now)
+                const timeDiff = Math.abs(receivedAt - data.timestamp);
+                if (timeDiff < 15000) { // Less than 15 seconds difference
+                    const newOffset = receivedAt - data.timestamp;
+                    clockOffsetSamples.push(newOffset);
+
+                    // Keep only recent samples
+                    if (clockOffsetSamples.length > MAX_CLOCK_OFFSET_SAMPLES) {
+                        clockOffsetSamples.shift();
+                    }
+
+                    // Calculate average offset
+                    const avgOffset = clockOffsetSamples.reduce((a, b) => a + b, 0) / clockOffsetSamples.length;
+
+                    // Update clock offset if we have enough samples
+                    if (clockOffsetSamples.length >= 3) {
+                        const oldOffset = clockOffset;
+                        clockOffset = Math.round(avgOffset);
+
+                        // Log if offset changed significantly
+                        if (Math.abs(clockOffset - oldOffset) > 100 && oldOffset !== 0) {
+                            console.log(`Clock offset adjusted: ${oldOffset}ms → ${clockOffset}ms`);
+                        } else if (oldOffset === 0) {
+                            console.log(`Clock offset detected: ${clockOffset}ms (server ${clockOffset > 0 ? 'ahead of' : 'behind'} phone)`);
+                            if (Math.abs(clockOffset) > 5000) {
+                                console.warn(`⚠️  Large clock offset: ${Math.abs(clockOffset)}ms - phone may need NTP sync`);
+                            }
+                        }
+                    }
+                } else {
+                    console.warn(`⚠️  Invalid timestamp detected: ${data.timestamp} (diff: ${timeDiff}ms) - ignoring`);
+                }
+            }
+
+            // Calculate when this telemetry should be displayed based on timestamps
+            if (data.timestamp && clockOffset !== 0) {
+                // Validate timestamp is reasonable
+                const timeDiff = Math.abs(receivedAt - data.timestamp);
+                if (timeDiff >= 15000) {
+                    // Bad timestamp - fall back to delay-based
+                    bufferedData._displayTime = receivedAt + serverDelay;
+                } else {
+                    // Convert phone timestamp to server time
+                    const telemetryTime_server = data.timestamp + clockOffset;
+
+                    if (rtmpSyncEnabled && rtmpSyncInfo) {
+                        // Timestamp-based sync: calculate video position for this telemetry
+                        const videoPosition = telemetryTime_server - rtmpSyncInfo.stream_start_time_unix_ms;
+
+                        // Reject telemetry from before stream started (negative position)
+                        if (videoPosition < 0) {
+                            console.warn(`⚠️  Telemetry timestamp before stream start (${videoPosition}ms) - skipping`);
+                            return; // Don't buffer this data point
+                        }
+
+                        bufferedData._videoPosition = videoPosition;
+                        // Simplified: displayTime = when captured + pipeline delay
+                        bufferedData._displayTime = telemetryTime_server + serverDelay;
+                    } else {
+                        // Delay-based sync (fallback): display after fixed delay
+                        bufferedData._displayTime = receivedAt + serverDelay;
+                    }
+                }
+            } else {
+                // No timestamp or no clock offset yet - use delay-based sync
+                bufferedData._displayTime = receivedAt + serverDelay;
+            }
 
             telemetryBuffer.push(bufferedData);
 
@@ -466,46 +614,64 @@
             }
         }
 
-        // Display telemetry data that's serverDelay milliseconds old
+        // Display telemetry data based on timestamps or delay
         function displayDelayedTelemetry() {
             if (telemetryBuffer.length === 0) return;
 
             const now = Date.now();
-            const targetTime = now - serverDelay;
 
-            // Check if we have any data old enough
-            const oldestDataTime = telemetryBuffer[0]._receivedAt;
-
-            // If buffer doesn't have data old enough, use the oldest available
-            if (oldestDataTime > targetTime) {
-                // Not enough data accumulated yet, display oldest (most delayed) available
-                const data = telemetryBuffer[0];
-                updateOverlay(data);
-                return; // Don't remove data yet, let more accumulate
-            }
-
-            // Find the data point closest to our target time
+            // Find the telemetry point that should be displayed right now
             let closestIndex = -1;
             let closestDiff = Infinity;
 
             for (let i = telemetryBuffer.length - 1; i >= 0; i--) {
-                const diff = Math.abs(telemetryBuffer[i]._receivedAt - targetTime);
-                if (diff < closestDiff) {
-                    closestDiff = diff;
-                    closestIndex = i;
-                } else {
-                    // Times are getting older, we can stop
-                    break;
+                const data = telemetryBuffer[i];
+
+                if (!data._displayTime) {
+                    continue; // Skip data without display time
+                }
+
+                // Should this data be displayed now?
+                const timeDiff = data._displayTime - now;
+
+                if (timeDiff <= 0) {
+                    // This data is ready to display (or overdue)
+                    const absDiff = Math.abs(timeDiff);
+                    if (absDiff < closestDiff) {
+                        closestDiff = absDiff;
+                        closestIndex = i;
+                    }
                 }
             }
 
+            // If we found data to display
             if (closestIndex !== -1) {
                 const data = telemetryBuffer[closestIndex];
                 updateOverlay(data);
 
-                // Clean up old data we've already displayed (including the displayed item)
-                if (closestIndex > 0) {
-                    telemetryBuffer.splice(0, closestIndex);
+                // Log sync info in debug mode
+                if (data._videoPosition !== undefined) {
+                    // Timestamp-based sync
+                    if (telemetryBuffer.length > 10 && Math.random() < 0.01) { // Log 1% of frames
+                        console.log(`[Timestamp Sync] Video pos: ${data._videoPosition}ms, Buffer: ${telemetryBuffer.length}, Accuracy: ${closestDiff}ms, Offset: ${clockOffset}ms`);
+                    }
+                } else {
+                    // Delay-based sync
+                    if (telemetryBuffer.length > 10 && Math.random() < 0.01) {
+                        console.log(`[Delay Sync] Delay: ${serverDelay}ms, Buffer: ${telemetryBuffer.length}, Accuracy: ${closestDiff}ms`);
+                    }
+                }
+
+                // Clean up old data we've displayed (including the displayed item)
+                telemetryBuffer.splice(0, closestIndex + 1);
+            } else if (telemetryBuffer.length > 0) {
+                // No data ready yet - check if oldest data is overdue
+                const oldest = telemetryBuffer[0];
+                if (oldest._displayTime && now - oldest._displayTime > 2000) {
+                    // Data is more than 2 seconds overdue, display it anyway
+                    console.warn('⚠️  Telemetry data delayed - displaying oldest available');
+                    updateOverlay(oldest);
+                    telemetryBuffer.shift();
                 }
             }
         }
@@ -534,7 +700,12 @@
 
             ws.onopen = () => {
                 console.log('WebSocket connected');
-                console.log(`Telemetry will be delayed by ${serverDelay}ms to sync with video`);
+                if (rtmpSyncEnabled) {
+                    console.log('🎯 RTMP sync mode: Using timestamp-based synchronization');
+                    console.log(`   Video delay compensation: ${serverDelay}ms`);
+                } else {
+                    console.log(`⏱️  Delay-based sync: ${serverDelay}ms fixed delay`);
+                }
                 errorCount = 0;
                 const statusEl = document.getElementById('statusDot');
                 statusEl.className = 'status-dot good';
@@ -550,11 +721,19 @@
                         // Buffer the data instead of displaying immediately
                         bufferTelemetry(message.data);
                     } else if (message.type === 'config') {
-                        // Config updated - apply new delay immediately
+                        // Config updated - apply new delay and reset interval immediately
                         const newDelay = message.data.video_delay_ms;
                         if (newDelay !== undefined && newDelay !== serverDelay) {
                             serverDelay = newDelay;
                             console.log(`Delay updated to ${serverDelay}ms (live update from server)`);
+                        }
+
+                        const newResetInterval = message.data.max_g_reset_interval_min;
+                        if (newResetInterval !== undefined && newResetInterval !== maxGResetIntervalMin) {
+                            maxGResetIntervalMin = newResetInterval;
+                            console.log(`Max g-force reset interval updated to ${maxGResetIntervalMin} minutes (live update from server)`);
+                            // Restart timer with new interval
+                            restartMaxGResetTimer();
                         }
                     } else if (message.type === 'reset-max-gforce') {
                         // Reset max g-force on command from server/admin
@@ -564,6 +743,33 @@
                         // New session started - reset max g-force
                         console.log('New session started:', message.sessionId);
                         resetMaxGForce();
+                    } else if (message.type === 'rtmp-stream-start') {
+                        // RTMP stream started - we can use this for sync
+                        console.log('📹 RTMP stream started:', message.timestamp_ms, 'ms');
+                        rtmpSyncInfo = {
+                            is_live: true,
+                            stream_start_time_unix_ms: message.timestamp_ms,
+                            stream_name: message.stream_name
+                        };
+                        rtmpSyncEnabled = true;
+                        console.log('🎯 Timestamp-based sync ENABLED');
+                        console.log(`   Stream start: ${new Date(message.timestamp_ms).toLocaleTimeString()}`);
+                        console.log(`   Clock offset: ${clockOffset}ms (${clockOffsetSamples.length} samples)`);
+
+                        // Clear buffer and restart with new sync mode
+                        telemetryBuffer.length = 0;
+                    } else if (message.type === 'rtmp-stream-stop') {
+                        // RTMP stream stopped
+                        console.log('📹 RTMP stream stopped:', message.timestamp_ms, 'ms');
+                        rtmpSyncInfo = null;
+                        rtmpSyncEnabled = false;
+                        console.log('⏱️  Falling back to delay-based sync');
+
+                        // Clear buffer and restart with delay-based sync
+                        telemetryBuffer.length = 0;
+
+                        // Reset clock offset tracking for next stream
+                        clockOffsetSamples = [];
                     }
                 } catch (error) {
                     console.error('Failed to parse WebSocket message:', error);
@@ -597,8 +803,10 @@
 
         // Initialize
         loadMaxGForce(); // Load from localStorage
-        loadConfig().then(() => {
+        Promise.all([loadConfig(), loadRtmpSync()]).then(() => {
             connectWebSocket();
+            // Start the auto-reset timer
+            restartMaxGResetTimer();
         });
 
         console.log('RaceBox Telemetry Overlay initialized');
@@ -609,6 +817,7 @@
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             stopDelayedDisplay();
+            stopMaxGResetTimer();
             if (ws) {
                 ws.close();
             }

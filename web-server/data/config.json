@@ -1,0 +1,6 @@
+{
+  "video_delay_ms": 1500,
+  "update_interval_ms": 100,
+  "session_timeout_ms": 300000,
+  "timezone": "America/New_York"
+}

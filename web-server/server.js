@@ -5,6 +5,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const WebSocket = require('ws');
 const http = require('http');
+const fetch = require('node-fetch');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,8 +13,10 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 5000;
 const DEBUG = process.env.DEBUG === 'true';
-let VIDEO_DELAY_MS = parseInt(process.env.VIDEO_DELAY_MS) || 1500;
+let VIDEO_DELAY_MS = parseInt(process.env.VIDEO_DELAY_MS) || 1000; // Default 1000ms (optimized for 360p RTMP over ethernet)
 let SEND_FREQUENCY_HZ = parseInt(process.env.SEND_FREQUENCY_HZ) || 10; // Default 10Hz
+let MAX_G_RESET_INTERVAL_MIN = parseInt(process.env.MAX_G_RESET_INTERVAL_MIN) || 5; // Default 5 minutes
+const STREAM_KEY = process.env.STREAM_KEY || 'racebox-default-key'; // Change this for security!
 
 // Middleware
 app.use(cors());
@@ -107,7 +110,8 @@ function broadcastConfig() {
         data: {
             video_delay_ms: VIDEO_DELAY_MS,
             send_frequency_hz: SEND_FREQUENCY_HZ,
-            send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ)
+            send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ),
+            max_g_reset_interval_min: MAX_G_RESET_INTERVAL_MIN
         }
     });
     wsClients.forEach((client) => {
@@ -132,17 +136,33 @@ function log(...args) {
 }
 
 // Start a new telemetry session
-function startSession() {
+async function startSession() {
     if (!currentSession) {
         currentSession = {
             id: uuidv4(),
             startTime: new Date().toISOString(),
+            startTime_unix_ms: Date.now(),
             dataPoints: 0
         };
         sessionData = [];
         console.log('=== NEW SESSION STARTED ===');
         log('Session ID:', currentSession.id);
         log('Start time:', currentSession.startTime);
+        log('Server time (ms):', currentSession.startTime_unix_ms);
+
+        // Try to capture RTMP stream start time
+        try {
+            const response = await fetch('http://localhost:8080/stream/info', { timeout: 500 });
+            if (response.ok) {
+                const rtmpInfo = await response.json();
+                if (rtmpInfo.is_live) {
+                    currentSession.rtmp_stream_start_ms = rtmpInfo.stream_start_time_unix_ms;
+                    log('RTMP stream active - captured start time:', rtmpInfo.stream_start_time_unix_ms);
+                }
+            }
+        } catch (error) {
+            log('Could not query RTMP status:', error.message);
+        }
 
         // Broadcast session start to clients (so they can reset their max g-force)
         broadcastMessage({ type: 'session-start', sessionId: currentSession.id });
@@ -218,6 +238,8 @@ app.post('/telemetry', (req, res) => {
 
     log('Received telemetry data:', data);
 
+    const receivedAt_ms = Date.now();
+
     // Update latest telemetry
     latestTelemetry = {
         speed: data.speed !== undefined ? data.speed : latestTelemetry.speed,
@@ -237,10 +259,29 @@ app.post('/telemetry', (req, res) => {
 
     // Session management
     startSession();
+
+    // Detect clock offset on first telemetry point with timestamp
+    if (currentSession.dataPoints === 0 && data.timestamp) {
+        try {
+            const phoneTime_ms = new Date(data.timestamp).getTime();
+            const clockOffset_ms = receivedAt_ms - phoneTime_ms;
+            currentSession.clock_offset_ms = clockOffset_ms;
+            log('Clock offset detected:', clockOffset_ms, 'ms (server ahead of phone)');
+
+            // If offset is significant, log a warning
+            if (Math.abs(clockOffset_ms) > 5000) {
+                console.log(`⚠️  WARNING: Phone clock is ${Math.abs(clockOffset_ms)}ms ${clockOffset_ms > 0 ? 'behind' : 'ahead of'} server`);
+            }
+        } catch (error) {
+            log('Could not detect clock offset:', error.message);
+        }
+    }
+
     currentSession.dataPoints++;
     sessionData.push({
         ...data,
-        _received: new Date().toISOString()
+        _received: new Date().toISOString(),
+        _received_ms: receivedAt_ms
     });
     resetSessionTimeout();
 
@@ -260,20 +301,40 @@ app.get('/telemetry', (req, res) => {
 });
 
 // GET /config - Configuration for overlay and Android app
-app.get('/config', (req, res) => {
+app.get('/config', async (req, res) => {
     log('Config requested, session:', currentSession);
-    res.json({
+
+    const config = {
         video_delay_ms: VIDEO_DELAY_MS,
         send_frequency_hz: SEND_FREQUENCY_HZ,
         send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ),
         update_interval_ms: 100,
+        max_g_reset_interval_min: MAX_G_RESET_INTERVAL_MIN,
         session: currentSession
-    });
+    };
+
+    // Optionally include RTMP sync info if requested
+    if (req.query.include_rtmp === 'true') {
+        try {
+            const response = await fetch('http://localhost:8080/stream/info', { timeout: 500 });
+            if (response.ok) {
+                const rtmpInfo = await response.json();
+                config.rtmp_sync = {
+                    is_live: rtmpInfo.is_live,
+                    stream_start_time_unix_ms: rtmpInfo.stream_start_time_unix_ms
+                };
+            }
+        } catch (error) {
+            log('Could not fetch RTMP info for config:', error.message);
+        }
+    }
+
+    res.json(config);
 });
 
 // POST /config - Update configuration
 app.post('/config', (req, res) => {
-    const { video_delay_ms, send_frequency_hz } = req.body;
+    const { video_delay_ms, send_frequency_hz, max_g_reset_interval_min } = req.body;
     let updated = false;
     const response = { status: 'ok' };
 
@@ -308,6 +369,21 @@ app.post('/config', (req, res) => {
         }
     }
 
+    if (max_g_reset_interval_min !== undefined) {
+        const newInterval = parseInt(max_g_reset_interval_min);
+        if (!isNaN(newInterval) && newInterval >= 1 && newInterval <= 10) {
+            MAX_G_RESET_INTERVAL_MIN = newInterval;
+            console.log(`Max G reset interval updated to ${MAX_G_RESET_INTERVAL_MIN} minutes`);
+            response.max_g_reset_interval_min = MAX_G_RESET_INTERVAL_MIN;
+            updated = true;
+        } else {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid max_g_reset_interval_min value (must be 1-10)'
+            });
+        }
+    }
+
     if (updated) {
         // Broadcast config change to all connected overlays
         broadcastConfig();
@@ -316,6 +392,105 @@ app.post('/config', (req, res) => {
         res.status(400).json({
             status: 'error',
             message: 'No valid parameters provided'
+        });
+    }
+});
+
+// GET /rtmp/validate - Validate RTMP stream key (called by nginx on_publish)
+app.get('/rtmp/validate', (req, res) => {
+    const streamName = req.query.name || '';
+
+    log('RTMP publish attempt:', streamName);
+
+    // Extract the key from the stream name (format: live/[key])
+    const streamKey = streamName.split('/').pop();
+
+    if (streamKey === STREAM_KEY) {
+        log('✓ Valid stream key - allowing publish');
+        res.status(200).send('OK');
+    } else {
+        console.log('✗ Invalid stream key - denying publish:', streamKey);
+        res.status(403).send('Forbidden');
+    }
+});
+
+// POST /rtmp/stream-event - Receive RTMP stream events from nginx
+app.post('/rtmp/stream-event', (req, res) => {
+    const { event, timestamp_ms, stream_name } = req.body;
+
+    if (event === 'start') {
+        console.log(`📹 RTMP stream started at ${timestamp_ms}ms (${stream_name})`);
+
+        // Broadcast stream start to all clients
+        broadcastMessage({
+            type: 'rtmp-stream-start',
+            timestamp_ms: timestamp_ms,
+            stream_name: stream_name
+        });
+
+        // If there's an active session, update it with RTMP start time
+        if (currentSession) {
+            currentSession.rtmp_stream_start_ms = timestamp_ms;
+            log('Updated session with RTMP start time');
+        }
+    } else if (event === 'stop') {
+        console.log(`📹 RTMP stream stopped at ${timestamp_ms}ms`);
+
+        // Broadcast stream stop to all clients
+        broadcastMessage({
+            type: 'rtmp-stream-stop',
+            timestamp_ms: timestamp_ms
+        });
+    }
+
+    res.status(200).send('OK');
+});
+
+// GET /rtmp/sync - Query RTMP stream info from nginx
+app.get('/rtmp/sync', async (req, res) => {
+    try {
+        log('Querying nginx for RTMP stream info');
+
+        // Query nginx on localhost:8080 (same container)
+        const response = await fetch('http://localhost:8080/stream/info', {
+            timeout: 1000
+        });
+
+        if (!response.ok) {
+            throw new Error(`Nginx returned ${response.status}`);
+        }
+
+        const rtmpInfo = await response.json();
+        log('RTMP info from nginx:', rtmpInfo);
+
+        // Calculate telemetry delay if stream is live
+        let telemetry_delay_ms = VIDEO_DELAY_MS;
+        if (rtmpInfo.is_live && currentSession) {
+            const sessionStart = new Date(currentSession.startTime).getTime();
+            const streamStart = rtmpInfo.stream_start_time_unix_ms;
+            telemetry_delay_ms = sessionStart - streamStart;
+            log('Calculated telemetry delay:', telemetry_delay_ms, 'ms');
+        }
+
+        res.json({
+            rtmp: rtmpInfo,
+            telemetry_delay_ms,
+            sync_available: rtmpInfo.is_live,
+            video_delay_ms: VIDEO_DELAY_MS
+        });
+
+    } catch (error) {
+        log('Error querying nginx:', error.message);
+
+        // Return fallback response - sync not available
+        res.json({
+            rtmp: {
+                is_live: false,
+                stream_start_time_unix_ms: 0,
+                error: error.message
+            },
+            sync_available: false,
+            video_delay_ms: VIDEO_DELAY_MS
         });
     }
 });
@@ -456,11 +631,13 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Session timeout: ${SESSION_TIMEOUT / 1000}s`);
     console.log(`WebSocket: ENABLED`);
     console.log(`Video delay: ${VIDEO_DELAY_MS}ms`);
+    console.log(`Stream key: ${STREAM_KEY}`);
     console.log('');
     console.log(`Overlay URL: http://localhost:${PORT}`);
     console.log(`Admin page: http://localhost:${PORT}/admin`);
     console.log(`API endpoint: http://localhost:${PORT}/telemetry`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
+    console.log(`RTMP publish: rtmp://localhost:1935/live/${STREAM_KEY}`);
     console.log('='.repeat(60));
     if (DEBUG) {
         console.log('[DEBUG] Detailed logging enabled');

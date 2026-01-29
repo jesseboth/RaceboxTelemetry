@@ -251,14 +251,14 @@
             <div class="setting-row">
                 <label>Current Delay</label>
                 <div class="delay-value">
-                    <span class="ms" id="delayValue">1500 ms</span>
-                    <span class="seconds" id="delaySeconds">(1.5 seconds)</span>
+                    <span class="ms" id="delayValue">1000 ms</span>
+                    <span class="seconds" id="delaySeconds">(1.0 seconds)</span>
                 </div>
             </div>
 
             <div class="setting-row">
                 <label>Adjust Delay</label>
-                <input type="range" id="delaySlider" min="0" max="5000" step="100" value="1500">
+                <input type="range" id="delaySlider" min="0" max="5000" step="100" value="1000">
                 <div class="range-labels">
                     <span>0 ms (No delay)</span>
                     <span>5000 ms (5 seconds)</span>
@@ -294,11 +294,27 @@
         </div>
 
         <div class="card">
-            <h2>Max G-Force Reset</h2>
-            <p style="color: #aaa; font-size: 14px; margin-bottom: 16px;">
-                Reset the maximum g-force tracking shown on the overlay.
+            <h2>Max G-Force Auto-Reset</h2>
+            <p style="color: #00c3ff; font-size: 13px; margin-bottom: 12px; font-weight: bold;">
+                ⚡ Max G-force resets automatically after inactivity
             </p>
-            <button class="btn" id="resetMaxGButton">Reset Max G-Force</button>
+            <div class="setting-row">
+                <label>Current Reset Interval</label>
+                <div class="delay-value">
+                    <span class="ms" id="resetIntervalValue">5 minutes</span>
+                    <span class="seconds" id="resetIntervalDesc">Resets after no new max G</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Adjust Reset Interval</label>
+                <input type="range" id="resetIntervalSlider" min="1" max="10" step="1" value="5">
+                <div class="range-labels">
+                    <span>1 minute</span>
+                    <span>10 minutes</span>
+                </div>
+            </div>
+
             <div id="statusMessageMaxG" class="status hidden"></div>
         </div>
 
@@ -347,8 +363,9 @@
 
     <script>
         const API_URL = window.location.origin;
-        let currentDelay = 1500;
+        let currentDelay = 1000; // Default for 360p RTMP over ethernet
         let currentFrequency = 10;
+        let currentResetInterval = 5;
 
         const delaySlider = document.getElementById('delaySlider');
         const delayValue = document.getElementById('delayValue');
@@ -358,20 +375,29 @@
         const frequencyValue = document.getElementById('frequencyValue');
         const frequencyInterval = document.getElementById('frequencyInterval');
         const statusMessageFreq = document.getElementById('statusMessageFreq');
+        const resetIntervalSlider = document.getElementById('resetIntervalSlider');
+        const resetIntervalValue = document.getElementById('resetIntervalValue');
+        const resetIntervalDesc = document.getElementById('resetIntervalDesc');
+        const statusMessageMaxG = document.getElementById('statusMessageMaxG');
         const sessionStatus = document.getElementById('sessionStatus');
         const dataPoints = document.getElementById('dataPoints');
         const uptime = document.getElementById('uptime');
         const overlayUrl = document.getElementById('overlayUrl');
-        const resetMaxGButton = document.getElementById('resetMaxGButton');
-        const statusMessageMaxG = document.getElementById('statusMessageMaxG');
 
         // Debounce timers for live updates
         let delayDebounceTimer = null;
         let frequencyDebounceTimer = null;
+        let resetIntervalDebounceTimer = null;
 
         // Track if sliders are being actively used
         let isDelaySliderActive = false;
         let isFrequencySliderActive = false;
+        let isResetIntervalSliderActive = false;
+
+        // Track last saved values to avoid unnecessary updates
+        let lastSavedDelay = 1000;
+        let lastSavedFrequency = 10;
+        let lastSavedResetInterval = 5;
 
         // Track when delay slider starts being used
         delaySlider.addEventListener('mousedown', () => {
@@ -395,9 +421,19 @@
             // Show "updating" status
             showStatus('Adjusting...', 'info');
 
-            // Save after 500ms of no movement
+            // Save after 500ms of no movement (only if change is significant)
             delayDebounceTimer = setTimeout(() => {
-                saveDelay(value);
+                // Only save if change is >= 50ms to avoid spamming server
+                // 50ms = ~1.5-2 video frames at 30fps, ~2m of travel at 100mph
+                if (Math.abs(value - lastSavedDelay) >= 50) {
+                    saveDelay(value);
+                } else {
+                    console.log(`Delay change too small (${Math.abs(value - lastSavedDelay)}ms) - not saving`);
+                    showStatus('Change < 50ms - not saved', 'info');
+                    setTimeout(() => {
+                        statusMessage.classList.add('hidden');
+                    }, 2000);
+                }
                 delayDebounceTimer = null;
                 isDelaySliderActive = false;
             }, 500);
@@ -459,6 +495,48 @@
             }, 600);
         });
 
+        // Track when reset interval slider starts being used
+        resetIntervalSlider.addEventListener('mousedown', () => {
+            isResetIntervalSliderActive = true;
+        });
+
+        resetIntervalSlider.addEventListener('touchstart', () => {
+            isResetIntervalSliderActive = true;
+        });
+
+        resetIntervalSlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            updateResetIntervalDisplay(value);
+
+            // Clear existing timer
+            if (resetIntervalDebounceTimer) {
+                clearTimeout(resetIntervalDebounceTimer);
+            }
+
+            // Show "updating" status
+            showMaxGStatus('Adjusting...', 'info');
+
+            // Save after 500ms of no movement
+            resetIntervalDebounceTimer = setTimeout(() => {
+                saveResetInterval(value);
+                resetIntervalDebounceTimer = null;
+                isResetIntervalSliderActive = false;
+            }, 500);
+        });
+
+        // Track when reset interval slider is released
+        resetIntervalSlider.addEventListener('mouseup', () => {
+            setTimeout(() => {
+                isResetIntervalSliderActive = false;
+            }, 600);
+        });
+
+        resetIntervalSlider.addEventListener('touchend', () => {
+            setTimeout(() => {
+                isResetIntervalSliderActive = false;
+            }, 600);
+        });
+
         function updateDelayDisplay(ms) {
             const seconds = (ms / 1000).toFixed(1);
             delayValue.textContent = `${ms} ms`;
@@ -469,6 +547,11 @@
             const intervalMs = Math.round(1000 / hz);
             frequencyValue.textContent = `${hz} Hz`;
             frequencyInterval.textContent = `(${intervalMs}ms interval)`;
+        }
+
+        function updateResetIntervalDisplay(minutes) {
+            resetIntervalValue.textContent = `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+            resetIntervalDesc.textContent = 'Resets after no new max G';
         }
 
         // Load current config (respects active sliders)
@@ -482,6 +565,7 @@
                     const serverDelay = config.video_delay_ms;
                     if (serverDelay !== currentDelay) {
                         currentDelay = serverDelay;
+                        lastSavedDelay = serverDelay; // Track server value
                         delaySlider.value = currentDelay;
                         updateDelayDisplay(currentDelay);
                         if (isPolling) {
@@ -495,10 +579,25 @@
                     const serverFreq = config.send_frequency_hz;
                     if (serverFreq !== currentFrequency) {
                         currentFrequency = serverFreq;
+                        lastSavedFrequency = serverFreq; // Track server value
                         frequencySlider.value = currentFrequency;
                         updateFrequencyDisplay(currentFrequency);
                         if (isPolling) {
                             console.log(`Frequency synced from server: ${currentFrequency}Hz`);
+                        }
+                    }
+                }
+
+                // Only update reset interval if slider is not being actively used
+                if (!isResetIntervalSliderActive && config.max_g_reset_interval_min !== undefined) {
+                    const serverResetInterval = config.max_g_reset_interval_min;
+                    if (serverResetInterval !== currentResetInterval) {
+                        currentResetInterval = serverResetInterval;
+                        lastSavedResetInterval = serverResetInterval; // Track server value
+                        resetIntervalSlider.value = currentResetInterval;
+                        updateResetIntervalDisplay(currentResetInterval);
+                        if (isPolling) {
+                            console.log(`Reset interval synced from server: ${currentResetInterval} minutes`);
                         }
                     }
                 }
@@ -556,6 +655,7 @@
 
                 if (response.ok) {
                     currentDelay = newDelay;
+                    lastSavedDelay = newDelay; // Track last saved value
                     showStatus(`✓ Updated to ${newDelay}ms - overlays synced`, 'success');
                 } else {
                     showStatus(`Error: ${result.message}`, 'error');
@@ -582,6 +682,7 @@
 
                 if (response.ok) {
                     currentFrequency = newFrequency;
+                    lastSavedFrequency = newFrequency; // Track last saved value
                     const intervalMs = Math.round(1000 / newFrequency);
                     showFreqStatus(`✓ Updated to ${newFrequency}Hz (${intervalMs}ms)`, 'success');
                 } else {
@@ -589,6 +690,33 @@
                 }
             } catch (e) {
                 showFreqStatus(`Failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Save reset interval to server (auto-called by slider debounce)
+        async function saveResetInterval(newInterval) {
+            try {
+                const response = await fetch(`${API_URL}/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        max_g_reset_interval_min: newInterval
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    currentResetInterval = newInterval;
+                    lastSavedResetInterval = newInterval; // Track last saved value
+                    showMaxGStatus(`✓ Updated to ${newInterval} ${newInterval === 1 ? 'minute' : 'minutes'}`, 'success');
+                } else {
+                    showMaxGStatus(`Error: ${result.message}`, 'error');
+                }
+            } catch (e) {
+                showMaxGStatus(`Failed: ${e.message}`, 'error');
             }
         }
 
@@ -627,33 +755,6 @@
                 }, 5000);
             }
         }
-
-        // Reset max g-force
-        async function resetMaxGForce() {
-            try {
-                resetMaxGButton.disabled = true;
-                showMaxGStatus('Resetting...', 'info');
-
-                const response = await fetch(`${API_URL}/max-gforce/reset`, {
-                    method: 'POST'
-                });
-
-                const result = await response.json();
-
-                if (response.ok) {
-                    showMaxGStatus('✓ Max g-force has been reset', 'success');
-                } else {
-                    showMaxGStatus(`Error: ${result.message}`, 'error');
-                }
-            } catch (e) {
-                showMaxGStatus(`Failed: ${e.message}`, 'error');
-            } finally {
-                resetMaxGButton.disabled = false;
-            }
-        }
-
-        // Add click handler for reset button
-        resetMaxGButton.addEventListener('click', resetMaxGForce);
 
         // Set overlay URL
         overlayUrl.textContent = `${window.location.origin}/`;

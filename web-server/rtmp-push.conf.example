@@ -1,0 +1,14 @@
+# RTMP Push Configuration - OBS Destination
+#
+# Copy this file to rtmp-push.conf and edit with your OBS machine IP
+# Example: cp rtmp-push.conf.example rtmp-push.conf
+#
+# This file is included by nginx.conf and should contain the push directive
+# to forward the RTMP stream to your OBS machine.
+#
+# IMPORTANT: rtmp-push.conf is gitignored for security (contains local IPs)
+
+# Forward stream to OBS machine
+# Replace 192.168.1.100 with your actual OBS machine IP address
+# Note: This relays the stream with the same key, so OBS doesn't need to validate
+push rtmp://192.168.1.100:1935/live/stream;

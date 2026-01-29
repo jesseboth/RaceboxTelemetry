@@ -11,6 +11,7 @@ PORT=$DEFAULT_PORT
 NETWORK=""
 DEBUG_FLAG=""
 VIDEO_DELAY=""
+STREAM_KEY=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --delay)
             VIDEO_DELAY="-e VIDEO_DELAY_MS=$2"
+            shift 2
+            ;;
+        --stream-key)
+            STREAM_KEY="-e STREAM_KEY=$2"
             shift 2
             ;;
         daemon|stop|restart|start|log|build)
@@ -121,6 +126,20 @@ start_container() {
         exit 0
     fi
 
+    # Check if rtmp-push.conf exists
+    if [ ! -f "${SCRIPT_DIR}/rtmp-push.conf" ]; then
+        print_warning "rtmp-push.conf not found!"
+        print_info "Creating rtmp-push.conf from example template..."
+        print_info "Please edit rtmp-push.conf with your OBS machine IP address"
+        print_info "Example: push rtmp://192.168.1.100:1935/live/stream;"
+        if [ -f "${SCRIPT_DIR}/rtmp-push.conf.example" ]; then
+            cp "${SCRIPT_DIR}/rtmp-push.conf.example" "${SCRIPT_DIR}/rtmp-push.conf"
+        else
+            echo "# RTMP Push Configuration - Edit with your OBS IP" > "${SCRIPT_DIR}/rtmp-push.conf"
+            echo "# Example: push rtmp://192.168.1.100:1935/live/stream;" >> "${SCRIPT_DIR}/rtmp-push.conf"
+        fi
+    fi
+
     # Build image if it doesn't exist
     if [ -z "$(docker images -q $IMAGE_NAME)" ]; then
         build_image
@@ -132,7 +151,7 @@ start_container() {
     fi
 
     print_info "Starting container: $CONTAINER_NAME"
-    print_info "Port mapping: $PORT:5000"
+    print_info "Port mapping: Web $PORT:5000, RTMP 1935:1935, Nginx Stats 5001:8080"
 
     # Build docker run command
     DOCKER_CMD="docker run -d --name $CONTAINER_NAME"
@@ -142,7 +161,7 @@ start_container() {
         DOCKER_CMD="$DOCKER_CMD --network $NETWORK"
         print_info "Using network: $NETWORK"
     else
-        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000"
+        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000 -p 1935:1935 -p 5001:8080"
     fi
 
     # Add debug flag if specified
@@ -158,6 +177,15 @@ start_container() {
         print_info "Video delay set to: ${DELAY_VALUE}ms"
     fi
 
+    # Add stream key if specified
+    if [ -n "$STREAM_KEY" ]; then
+        DOCKER_CMD="$DOCKER_CMD $STREAM_KEY"
+        KEY_VALUE=$(echo $STREAM_KEY | sed 's/-e STREAM_KEY=//')
+        print_info "Stream key set to: ${KEY_VALUE}"
+    else
+        print_warning "Using default stream key (change with --stream-key for security!)"
+    fi
+
     # Add volume mounts
     DOCKER_CMD="$DOCKER_CMD -v ${SCRIPT_DIR}/archive:/usr/src/app/archive"
 
@@ -170,6 +198,8 @@ start_container() {
     if [ $? -eq 0 ]; then
         print_success "Container started successfully"
         print_info "Access server at: http://localhost:$PORT"
+        print_info "RTMP stream: rtmp://localhost:1935/live/stream"
+        print_info "Nginx stats: http://localhost:5001/stat"
         print_info "View logs with: ./docker.sh log"
     else
         print_error "Failed to start container"
@@ -219,18 +249,31 @@ case $COMMAND in
         echo "  build         - Build Docker image"
         echo ""
         echo "Options:"
-        echo "  -p|--port PORT       - Override port (default: $DEFAULT_PORT)"
+        echo "  -p|--port PORT       - Override web server port (default: $DEFAULT_PORT)"
         echo "  --network NETWORK    - Use specific Docker network (enables host networking)"
         echo "  --debug              - Enable debug mode"
         echo "  --delay MILLISECONDS - Video delay in ms for stream sync (default: 1500)"
+        echo "  --stream-key KEY     - Set RTMP stream key for authentication (default: racebox-default-key)"
+        echo ""
+        echo "Ports:"
+        echo "  5000 - Web server (telemetry and overlay)"
+        echo "  1935 - RTMP server (stream input from phone)"
+        echo "  5001 - Nginx stats and API"
+        echo ""
+        echo "RTMP Setup:"
+        echo "  1. Copy rtmp-push.conf.example to rtmp-push.conf"
+        echo "  2. Edit rtmp-push.conf with your OBS machine IP"
+        echo "  3. Configure phone to stream to rtmp://server-ip:1935/live/stream"
+        echo "  4. Configure OBS Media Source with same RTMP URL"
         echo ""
         echo "Examples:"
-        echo "  $0 daemon                 # Start on default port $DEFAULT_PORT"
-        echo "  $0 -p 8080 daemon         # Start on port 8080"
-        echo "  $0 --debug daemon         # Start with debug logging"
-        echo "  $0 --delay 2000 daemon    # Start with 2000ms video delay"
-        echo "  $0 --network host daemon  # Start with host networking"
-        echo "  $0 log                    # View logs"
+        echo "  $0 daemon                              # Start on default port $DEFAULT_PORT"
+        echo "  $0 -p 8080 daemon                      # Start with web server on port 8080"
+        echo "  $0 --debug daemon                      # Start with debug logging"
+        echo "  $0 --delay 2000 daemon                 # Start with 2000ms video delay"
+        echo "  $0 --stream-key mySecretKey123 daemon  # Start with custom stream key"
+        echo "  $0 --network host daemon               # Start with host networking"
+        echo "  $0 log                                 # View logs"
         exit 1
         ;;
 esac
