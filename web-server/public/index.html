@@ -293,8 +293,7 @@
         const KMH_TO_MPH = 0.621371;
 
         let errorCount = 0;
-        const MAX_ERRORS = 5;
-        let serverDelay = 1000; // Default for 360p RTMP over ethernet
+        let serverDelay = 0; // Default 0ms
         let ws = null;
         let reconnectTimeout = null;
         let displayInterval = null;
@@ -302,6 +301,7 @@
         // RTMP sync state
         let rtmpSyncInfo = null;
         let rtmpSyncEnabled = false;
+        let telemetryDelayMs = null; // ms between stream start and first telemetry (positive = telemetry started after stream)
         let clockOffset = 0; // Phone clock offset from server (server_time - phone_time)
         let clockOffsetSamples = []; // Track multiple samples for stability
         const MAX_CLOCK_OFFSET_SAMPLES = 10;
@@ -434,24 +434,13 @@
             }
         }
 
-        // Calculate video timestamp for telemetry point (RTMP sync mode)
-        function calculateVideoTimestamp(telemetryTimestamp) {
-            if (!rtmpSyncEnabled || !rtmpSyncInfo) {
-                return null;
-            }
-
-            // Calculate offset: how many milliseconds into the video stream this telemetry point should appear
-            const videoTimestamp = telemetryTimestamp - rtmpSyncInfo.stream_start_time_unix_ms;
-            return videoTimestamp;
-        }
-
         function getGForceClass(totalG) {
             if (totalG > 1.5) return ' extreme';
             if (totalG > 0.8) return ' high';
             return '';
         }
 
-        function updateGForceDisplay(gLat, gLong, speed) {
+        function updateGForceDisplay(gLat, gLong) {
             const dot = document.getElementById('gForceDot');
             const radius = 66; // Half of 144px - 6px (half dot size)
 
@@ -503,7 +492,7 @@
             const gLong = data.g_long || 0;
 
             // Update G-force display
-            updateGForceDisplay(gLat, gLong, speedKmh);
+            updateGForceDisplay(gLat, gLong);
 
             // Update max g-force (only when moving to track actual driving forces)
             if (speedKmh >= 0) {
@@ -536,12 +525,18 @@
                 _receivedAt: receivedAt
             };
 
+            // Normalize timestamp to numeric Unix ms regardless of whether the Android app
+            // sends an ISO string ("2024-01-01T12:00:00.000Z") or a number.
+            const phoneTime_ms = data.timestamp
+                ? (typeof data.timestamp === 'number' ? data.timestamp : new Date(data.timestamp).getTime())
+                : null;
+
             // Update clock offset with running average (for stability and drift compensation)
-            if (data.timestamp) {
+            if (phoneTime_ms !== null && !isNaN(phoneTime_ms)) {
                 // Validate timestamp is reasonable (within 15 seconds of now)
-                const timeDiff = Math.abs(receivedAt - data.timestamp);
+                const timeDiff = Math.abs(receivedAt - phoneTime_ms);
                 if (timeDiff < 15000) { // Less than 15 seconds difference
-                    const newOffset = receivedAt - data.timestamp;
+                    const newOffset = receivedAt - phoneTime_ms;
                     clockOffsetSamples.push(newOffset);
 
                     // Keep only recent samples
@@ -558,9 +553,9 @@
                         clockOffset = Math.round(avgOffset);
 
                         // Log if offset changed significantly
-                        if (Math.abs(clockOffset - oldOffset) > 100 && oldOffset !== 0) {
+                        if (Math.abs(clockOffset - oldOffset) > 100 && clockOffsetSamples.length > 3) {
                             console.log(`Clock offset adjusted: ${oldOffset}ms → ${clockOffset}ms`);
-                        } else if (oldOffset === 0) {
+                        } else if (clockOffsetSamples.length === 3) {
                             console.log(`Clock offset detected: ${clockOffset}ms (server ${clockOffset > 0 ? 'ahead of' : 'behind'} phone)`);
                             if (Math.abs(clockOffset) > 5000) {
                                 console.warn(`⚠️  Large clock offset: ${Math.abs(clockOffset)}ms - phone may need NTP sync`);
@@ -573,28 +568,30 @@
             }
 
             // Calculate when this telemetry should be displayed based on timestamps
-            if (data.timestamp && clockOffset !== 0) {
+            if (phoneTime_ms !== null && !isNaN(phoneTime_ms) && clockOffset !== 0) {
                 // Validate timestamp is reasonable
-                const timeDiff = Math.abs(receivedAt - data.timestamp);
+                const timeDiff = Math.abs(receivedAt - phoneTime_ms);
                 if (timeDiff >= 15000) {
                     // Bad timestamp - fall back to delay-based
                     bufferedData._displayTime = receivedAt + serverDelay;
                 } else {
                     // Convert phone timestamp to server time
-                    const telemetryTime_server = data.timestamp + clockOffset;
+                    const telemetryTime_server = phoneTime_ms + clockOffset;
 
                     if (rtmpSyncEnabled && rtmpSyncInfo) {
-                        // Timestamp-based sync: calculate video position for this telemetry
+                        // Timestamp-based sync: position of this telemetry point within the video timeline
                         const videoPosition = telemetryTime_server - rtmpSyncInfo.stream_start_time_unix_ms;
 
-                        // Reject telemetry from before stream started (negative position)
+                        // Reject telemetry from before the stream started
                         if (videoPosition < 0) {
                             console.warn(`⚠️  Telemetry timestamp before stream start (${videoPosition}ms) - skipping`);
-                            return; // Don't buffer this data point
+                            return;
                         }
 
                         bufferedData._videoPosition = videoPosition;
-                        // Simplified: displayTime = when captured + pipeline delay
+                        // Display time: absolute phone time adjusted to server clock + OBS encoding latency.
+                        // telemetryDelayMs is informational (metadata for replay alignment) — per-point
+                        // timestamps already encode each point's position in the video timeline exactly.
                         bufferedData._displayTime = telemetryTime_server + serverDelay;
                     } else {
                         // Delay-based sync (fallback): display after fixed delay
@@ -725,7 +722,9 @@
                         const newDelay = message.data.video_delay_ms;
                         if (newDelay !== undefined && newDelay !== serverDelay) {
                             serverDelay = newDelay;
-                            console.log(`Delay updated to ${serverDelay}ms (live update from server)`);
+                            // Clear buffer — buffered items have _displayTime based on the old delay
+                            telemetryBuffer.length = 0;
+                            console.log(`Delay updated to ${serverDelay}ms — buffer cleared`);
                         }
 
                         const newResetInterval = message.data.max_g_reset_interval_min;
@@ -742,6 +741,10 @@
                     } else if (message.type === 'session-start') {
                         // New session started - reset max g-force
                         console.log('New session started:', message.sessionId);
+                        if (message.telemetry_delay_ms != null) {
+                            telemetryDelayMs = message.telemetry_delay_ms;
+                            console.log(`Telemetry delay from session-start: ${telemetryDelayMs}ms`);
+                        }
                         resetMaxGForce();
                     } else if (message.type === 'rtmp-stream-start') {
                         // RTMP stream started - we can use this for sync
@@ -752,9 +755,15 @@
                             stream_name: message.stream_name
                         };
                         rtmpSyncEnabled = true;
+                        if (message.telemetry_delay_ms != null) {
+                            telemetryDelayMs = message.telemetry_delay_ms;
+                        }
                         console.log('🎯 Timestamp-based sync ENABLED');
                         console.log(`   Stream start: ${new Date(message.timestamp_ms).toLocaleTimeString()}`);
                         console.log(`   Clock offset: ${clockOffset}ms (${clockOffsetSamples.length} samples)`);
+                        if (telemetryDelayMs != null) {
+                            console.log(`   Telemetry delay: ${telemetryDelayMs}ms (${telemetryDelayMs > 0 ? 'stream started first' : 'telemetry started first'})`);
+                        }
 
                         // Clear buffer and restart with new sync mode
                         telemetryBuffer.length = 0;
@@ -763,6 +772,7 @@
                         console.log('📹 RTMP stream stopped:', message.timestamp_ms, 'ms');
                         rtmpSyncInfo = null;
                         rtmpSyncEnabled = false;
+                        telemetryDelayMs = null;
                         console.log('⏱️  Falling back to delay-based sync');
 
                         // Clear buffer and restart with delay-based sync

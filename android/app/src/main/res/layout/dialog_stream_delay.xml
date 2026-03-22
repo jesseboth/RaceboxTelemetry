@@ -71,7 +71,7 @@
         android:id="@+id/videoDelayLabel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="1500 ms (1.5 seconds)"
+        android:text="0 ms"
         android:textSize="18sp"
         android:textStyle="bold"
         android:paddingBottom="8dp"
@@ -83,7 +83,7 @@
         android:layout_height="wrap_content"
         android:valueFrom="0"
         android:valueTo="5000"
-        android:value="1500"
+        android:value="0"
         android:stepSize="100" />
 
     <LinearLayout

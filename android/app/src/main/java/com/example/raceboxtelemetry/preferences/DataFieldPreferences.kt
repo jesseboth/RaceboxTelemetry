@@ -38,7 +38,7 @@ class DataFieldPreferences(context: Context) {
         private const val DEFAULT_TIMESTAMP = true
         private const val DEFAULT_SEND_INTERVAL = 100L // 10Hz (100ms)
         private const val DEFAULT_API_URL = "http://192.168.1.100:5000"
-        private const val DEFAULT_VIDEO_DELAY = 1500 // 1.5 seconds
+        private const val DEFAULT_VIDEO_DELAY = 0 // 0ms
     }
 
     // Speed

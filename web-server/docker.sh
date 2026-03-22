@@ -187,7 +187,7 @@ start_container() {
     fi
 
     # Add volume mounts
-    DOCKER_CMD="$DOCKER_CMD -v ${SCRIPT_DIR}/archive:/usr/src/app/archive"
+    DOCKER_CMD="$DOCKER_CMD -v ${SCRIPT_DIR}/archive:/app/archive"
 
     # Add restart policy and image name
     DOCKER_CMD="$DOCKER_CMD --restart always $IMAGE_NAME"

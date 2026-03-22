@@ -13,7 +13,7 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 5000;
 const DEBUG = process.env.DEBUG === 'true';
-let VIDEO_DELAY_MS = parseInt(process.env.VIDEO_DELAY_MS) || 1000; // Default 1000ms (optimized for 360p RTMP over ethernet)
+let VIDEO_DELAY_MS = parseInt(process.env.VIDEO_DELAY_MS) || 0; // Default 0ms
 let SEND_FREQUENCY_HZ = parseInt(process.env.SEND_FREQUENCY_HZ) || 10; // Default 10Hz
 let MAX_G_RESET_INTERVAL_MIN = parseInt(process.env.MAX_G_RESET_INTERVAL_MIN) || 5; // Default 5 minutes
 const STREAM_KEY = process.env.STREAM_KEY || 'racebox-default-key'; // Change this for security!
@@ -21,6 +21,7 @@ const STREAM_KEY = process.env.STREAM_KEY || 'racebox-default-key'; // Change th
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: false })); // nginx-rtmp sends callbacks as form-encoded POST
 
 // Request logger (only in debug mode)
 if (DEBUG) {
@@ -128,6 +129,9 @@ let sessionData = [];
 const SESSION_TIMEOUT = 300000; // 5 minutes of inactivity ends session
 let sessionTimer = null;
 
+// Track stream start in Node memory so startSession() doesn't race against the fire-and-forget to nginx
+let currentStreamStart_ms = null;
+
 // Debug logging
 function log(...args) {
     if (DEBUG) {
@@ -150,22 +154,38 @@ async function startSession() {
         log('Start time:', currentSession.startTime);
         log('Server time (ms):', currentSession.startTime_unix_ms);
 
-        // Try to capture RTMP stream start time
-        try {
-            const response = await fetch('http://localhost:8080/stream/info', { timeout: 500 });
-            if (response.ok) {
-                const rtmpInfo = await response.json();
-                if (rtmpInfo.is_live) {
-                    currentSession.rtmp_stream_start_ms = rtmpInfo.stream_start_time_unix_ms;
-                    log('RTMP stream active - captured start time:', rtmpInfo.stream_start_time_unix_ms);
+        // Capture RTMP stream start time if a stream is already active.
+        // Prefer the in-memory value (set synchronously by handleRtmpStreamStart) over
+        // querying nginx, which may not have been updated yet by the fire-and-forget.
+        if (currentStreamStart_ms !== null) {
+            currentSession.rtmp_stream_start_ms = currentStreamStart_ms;
+            log('RTMP stream active - captured start time from memory:', currentStreamStart_ms);
+        } else {
+            try {
+                const response = await fetch('http://localhost:8080/stream/info', { signal: AbortSignal.timeout(500) });
+                if (response.ok) {
+                    const rtmpInfo = await response.json();
+                    if (rtmpInfo.is_live) {
+                        currentSession.rtmp_stream_start_ms = rtmpInfo.stream_start_time_unix_ms;
+                        log('RTMP stream active - captured start time from nginx:', rtmpInfo.stream_start_time_unix_ms);
+                    }
                 }
+            } catch (error) {
+                log('Could not query RTMP status:', error.message);
             }
-        } catch (error) {
-            log('Could not query RTMP status:', error.message);
         }
 
         // Broadcast session start to clients (so they can reset their max g-force)
-        broadcastMessage({ type: 'session-start', sessionId: currentSession.id });
+        // Include telemetry_delay_ms if the RTMP stream was already active when telemetry started.
+        // positive = stream started first (common), negative = telemetry started first.
+        const telemetryDelayOnStart = currentSession.rtmp_stream_start_ms != null
+            ? currentSession.startTime_unix_ms - currentSession.rtmp_stream_start_ms
+            : null;
+        broadcastMessage({
+            type: 'session-start',
+            sessionId: currentSession.id,
+            telemetry_delay_ms: telemetryDelayOnStart
+        });
     }
 }
 
@@ -233,7 +253,7 @@ function resetSessionTimeout() {
 // API Routes
 
 // POST /telemetry - Receive telemetry data from Android app
-app.post('/telemetry', (req, res) => {
+app.post('/telemetry', async (req, res) => {
     const data = req.body;
 
     log('Received telemetry data:', data);
@@ -258,7 +278,7 @@ app.post('/telemetry', (req, res) => {
     broadcastTelemetry(latestTelemetry);
 
     // Session management
-    startSession();
+    await startSession();
 
     // Detect clock offset on first telemetry point with timestamp
     if (currentSession.dataPoints === 0 && data.timestamp) {
@@ -316,7 +336,7 @@ app.get('/config', async (req, res) => {
     // Optionally include RTMP sync info if requested
     if (req.query.include_rtmp === 'true') {
         try {
-            const response = await fetch('http://localhost:8080/stream/info', { timeout: 500 });
+            const response = await fetch('http://localhost:8080/stream/info', { signal: AbortSignal.timeout(500) });
             if (response.ok) {
                 const rtmpInfo = await response.json();
                 config.rtmp_sync = {
@@ -396,51 +416,70 @@ app.post('/config', (req, res) => {
     }
 });
 
-// GET /rtmp/validate - Validate RTMP stream key (called by nginx on_publish)
-app.get('/rtmp/validate', (req, res) => {
-    const streamName = req.query.name || '';
+// Shared handler for RTMP stream start — called directly by /rtmp/on_publish
+// so we avoid a round-trip back through nginx.
+function handleRtmpStreamStart(streamName, timestamp_ms) {
+    console.log(`📹 RTMP stream started at ${timestamp_ms}ms (${streamName})`);
+
+    // Store in Node memory so startSession() can read it immediately without waiting on nginx
+    currentStreamStart_ms = timestamp_ms;
+
+    // positive = stream started first (telemetry starts later), negative = telemetry started first
+    const telemetryDelay = currentSession
+        ? new Date(currentSession.startTime).getTime() - timestamp_ms
+        : null;
+
+    broadcastMessage({
+        type: 'rtmp-stream-start',
+        timestamp_ms,
+        stream_name: streamName,
+        telemetry_delay_ms: telemetryDelay
+    });
+
+    if (currentSession) {
+        currentSession.rtmp_stream_start_ms = timestamp_ms;
+        log('Updated session with RTMP start time');
+    }
+}
+
+// POST /rtmp/on_publish - Called by nginx on_publish: validates key and handles stream start
+app.post('/rtmp/on_publish', async (req, res) => {
+    const streamName = req.body.name || req.query.name || '';
 
     log('RTMP publish attempt:', streamName);
 
-    // Extract the key from the stream name (format: live/[key])
     const streamKey = streamName.split('/').pop();
 
-    if (streamKey === STREAM_KEY) {
-        log('✓ Valid stream key - allowing publish');
-        res.status(200).send('OK');
-    } else {
+    if (streamKey !== STREAM_KEY) {
         console.log('✗ Invalid stream key - denying publish:', streamKey);
-        res.status(403).send('Forbidden');
+        return res.status(403).send('Forbidden');
     }
+
+    log('✓ Valid stream key - allowing publish');
+
+    const timestamp_ms = Date.now();
+
+    // Handle stream start logic immediately (no callback needed from nginx)
+    handleRtmpStreamStart(streamName, timestamp_ms);
+
+    // Tell nginx to store the timestamp in its shared dict for /stream/info queries.
+    // Fire-and-forget — we've already responded to the stream start above.
+    fetch(`http://localhost:8080/internal/on_publish?name=${encodeURIComponent(streamName)}&ts=${timestamp_ms}`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(1000)
+    }).catch(err => log('Could not update nginx stream info:', err.message));
+
+    res.status(200).send('OK');
 });
 
-// POST /rtmp/stream-event - Receive RTMP stream events from nginx
+// POST /rtmp/stream-event - Receive RTMP stop events from nginx on_publish_done
 app.post('/rtmp/stream-event', (req, res) => {
-    const { event, timestamp_ms, stream_name } = req.body;
+    const { event, timestamp_ms } = req.body;
 
-    if (event === 'start') {
-        console.log(`📹 RTMP stream started at ${timestamp_ms}ms (${stream_name})`);
-
-        // Broadcast stream start to all clients
-        broadcastMessage({
-            type: 'rtmp-stream-start',
-            timestamp_ms: timestamp_ms,
-            stream_name: stream_name
-        });
-
-        // If there's an active session, update it with RTMP start time
-        if (currentSession) {
-            currentSession.rtmp_stream_start_ms = timestamp_ms;
-            log('Updated session with RTMP start time');
-        }
-    } else if (event === 'stop') {
+    if (event === 'stop') {
         console.log(`📹 RTMP stream stopped at ${timestamp_ms}ms`);
-
-        // Broadcast stream stop to all clients
-        broadcastMessage({
-            type: 'rtmp-stream-stop',
-            timestamp_ms: timestamp_ms
-        });
+        currentStreamStart_ms = null;
+        broadcastMessage({ type: 'rtmp-stream-stop', timestamp_ms });
     }
 
     res.status(200).send('OK');
@@ -453,7 +492,7 @@ app.get('/rtmp/sync', async (req, res) => {
 
         // Query nginx on localhost:8080 (same container)
         const response = await fetch('http://localhost:8080/stream/info', {
-            timeout: 1000
+            signal: AbortSignal.timeout(1000)
         });
 
         if (!response.ok) {
@@ -463,8 +502,11 @@ app.get('/rtmp/sync', async (req, res) => {
         const rtmpInfo = await response.json();
         log('RTMP info from nginx:', rtmpInfo);
 
-        // Calculate telemetry delay if stream is live
-        let telemetry_delay_ms = VIDEO_DELAY_MS;
+        // Calculate telemetry delay if stream is live.
+        // Both sessionStart and streamStart are in server time, so no clock offset adjustment needed.
+        // A positive value means telemetry started after the stream (common case).
+        // null when not computable — distinct from video_delay_ms which is a separate concept.
+        let telemetry_delay_ms = null;
         if (rtmpInfo.is_live && currentSession) {
             const sessionStart = new Date(currentSession.startTime).getTime();
             const streamStart = rtmpInfo.stream_start_time_unix_ms;
@@ -472,10 +514,13 @@ app.get('/rtmp/sync', async (req, res) => {
             log('Calculated telemetry delay:', telemetry_delay_ms, 'ms');
         }
 
+        // Only enable sync if Node also confirms a stream is active (guards against stale nginx shared dict)
+        const streamActive = currentStreamStart_ms !== null && rtmpInfo.is_live;
+
         res.json({
             rtmp: rtmpInfo,
             telemetry_delay_ms,
-            sync_available: rtmpInfo.is_live,
+            sync_available: streamActive,
             video_delay_ms: VIDEO_DELAY_MS
         });
 
@@ -544,39 +589,48 @@ app.post('/max-gforce/reset', (req, res) => {
 });
 
 // GET /archive - List archived sessions
-app.get('/archive', (req, res) => {
+app.get('/archive', async (req, res) => {
     const archiveDir = path.join(__dirname, 'archive');
 
-    if (!fs.existsSync(archiveDir)) {
+    try {
+        await fs.promises.access(archiveDir);
+    } catch {
         return res.json({ sessions: [] });
     }
 
     const sessions = [];
 
-    function scanDirectory(dir, relativePath = '') {
-        const items = fs.readdirSync(dir);
-
+    async function scanDirectory(dir, relativePath = '') {
+        const items = await fs.promises.readdir(dir);
         for (const item of items) {
             const fullPath = path.join(dir, item);
-            const stat = fs.statSync(fullPath);
-
+            const stat = await fs.promises.stat(fullPath);
             if (stat.isDirectory()) {
-                scanDirectory(fullPath, path.join(relativePath, item));
+                await scanDirectory(fullPath, path.join(relativePath, item));
             } else if (item.endsWith('.json')) {
-                const content = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
-                sessions.push({
-                    filename: item,
-                    path: path.join(relativePath, item),
-                    session: content.session,
-                    dataPoints: content.data.length
-                });
+                try {
+                    const raw = await fs.promises.readFile(fullPath, 'utf8');
+                    const content = JSON.parse(raw);
+                    sessions.push({
+                        filename: item,
+                        path: path.join(relativePath, item),
+                        session: content.session,
+                        dataPoints: content.data.length
+                    });
+                } catch {
+                    log('Skipping malformed archive file:', fullPath);
+                }
             }
         }
     }
 
-    scanDirectory(archiveDir);
+    try {
+        await scanDirectory(archiveDir);
+    } catch (err) {
+        log('Error scanning archive directory:', err.message);
+        return res.status(500).json({ error: 'Failed to read archive' });
+    }
 
-    // Sort by start time, newest first
     sessions.sort((a, b) =>
         new Date(b.session.startTime) - new Date(a.session.startTime)
     );
@@ -585,15 +639,24 @@ app.get('/archive', (req, res) => {
 });
 
 // GET /archive/:year/:month/:filename - Get specific archived session
-app.get('/archive/:year/:month/:filename', (req, res) => {
+app.get('/archive/:year/:month/:filename', async (req, res) => {
     const { year, month, filename } = req.params;
+
+    if (!/^\d{4}$/.test(year) || !/^\d{2}$/.test(month) || !/^[\w\-]+\.json$/.test(filename)) {
+        return res.status(400).json({ error: 'Invalid path parameters' });
+    }
+
     const filepath = path.join(__dirname, 'archive', year, month, filename);
 
-    if (fs.existsSync(filepath)) {
-        const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
-        res.json(data);
-    } else {
-        res.status(404).json({ error: 'Session not found' });
+    try {
+        const raw = await fs.promises.readFile(filepath, 'utf8');
+        res.json(JSON.parse(raw));
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            res.status(404).json({ error: 'Session not found' });
+        } else {
+            res.status(500).json({ error: 'Failed to read session file' });
+        }
     }
 });
 
@@ -631,13 +694,13 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Session timeout: ${SESSION_TIMEOUT / 1000}s`);
     console.log(`WebSocket: ENABLED`);
     console.log(`Video delay: ${VIDEO_DELAY_MS}ms`);
-    console.log(`Stream key: ${STREAM_KEY}`);
+    console.log(`Stream key: ${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
     console.log('');
     console.log(`Overlay URL: http://localhost:${PORT}`);
     console.log(`Admin page: http://localhost:${PORT}/admin`);
     console.log(`API endpoint: http://localhost:${PORT}/telemetry`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
-    console.log(`RTMP publish: rtmp://localhost:1935/live/${STREAM_KEY}`);
+    console.log(`RTMP publish: rtmp://localhost:1935/live/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
     console.log('='.repeat(60));
     if (DEBUG) {
         console.log('[DEBUG] Detailed logging enabled');
