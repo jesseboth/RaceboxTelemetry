@@ -8,7 +8,8 @@
 #
 # IMPORTANT: rtmp-push.conf is gitignored for security (contains local IPs)
 
-# Forward stream to OBS machine
+# Optional forward from nginx listen app to OBS machine
 # Replace 192.168.1.100 with your actual OBS machine IP address
-# Note: This relays the stream with the same key, so OBS doesn't need to validate
-push rtmp://192.168.1.100:1935/live/stream;
+# Note: Keep this disabled when OBS pulls directly from /listen.
+# Note: This relays the stream with the same stream name.
+# push rtmp://192.168.1.100:1935/listen;
