@@ -18,7 +18,7 @@ A Node.js Express server for receiving, storing, and displaying RaceBox telemetr
 
 ### Using Docker (Recommended)
 
-1. **Set up RTMP push configuration** (for video streaming to OBS):
+1. **(Optional) Set up RTMP push configuration** (only if OBS will run as an RTMP server):
 ```bash
 cp rtmp-push.conf.example rtmp-push.conf
 # Edit rtmp-push.conf with your OBS machine IP
@@ -38,10 +38,10 @@ cp rtmp-push.conf.example rtmp-push.conf
    - API URL: `http://YOUR_SERVER_IP:5000/telemetry`
 
 5. **Configure your phone camera app** (for RTMP streaming):
-   - RTMP URL: `rtmp://YOUR_SERVER_IP:1935/live/mySecretKey123`
+   - RTMP URL: `rtmp://YOUR_SERVER_IP:1935/publish/mySecretKey123`
 
 6. **Configure OBS** (Media Source):
-   - Input: `rtmp://YOUR_SERVER_IP:1935/live/stream`
+   - Input: `rtmp://YOUR_SERVER_IP:1935/listen/mySecretKey123`
    - Or start OBS as RTMP server (see RTMP Setup section)
 
 ### Using Node.js Directly
@@ -122,34 +122,39 @@ racebox-default-key
 
 Configure your streaming app to publish to:
 ```
-rtmp://[SERVER_IP]:1935/live/[YOUR_STREAM_KEY]
+rtmp://[SERVER_IP]:1935/publish/[YOUR_STREAM_KEY]
 ```
 
 **Examples:**
-- With custom key: `rtmp://192.168.1.100:1935/live/mySecretKey123`
-- With default key: `rtmp://192.168.1.100:1935/live/racebox-default-key`
+- With custom key: `rtmp://192.168.1.100:1935/publish/mySecretKey123`
+- With default key: `rtmp://192.168.1.100:1935/publish/racebox-default-key`
 
 Only streams with the correct key will be accepted. Invalid keys are rejected immediately.
 
 ### OBS Configuration
 
-**Option 1: OBS as RTMP Server (Receives stream from nginx)**
+**Option 1: OBS Pull Mode (Recommended)**
+
+In OBS, set up Media Source:
+- Input: `rtmp://[SERVER_IP]:1935/listen/[YOUR_STREAM_KEY]`
+
+**Option 2: OBS as RTMP Server (Receives push from nginx)**
 
 1. Copy and edit the push configuration:
 ```bash
 cp rtmp-push.conf.example rtmp-push.conf
-# Edit: push rtmp://[OBS_MACHINE_IP]:1935/live/stream;
+# Edit: push rtmp://[OBS_MACHINE_IP]:1935/listen;
 ```
 
 2. In OBS, set up Media Source:
-   - Input: `rtmp://0.0.0.0:1935/live/stream`
-   - Or if nginx is on another machine: `rtmp://[SERVER_IP]:1935/live/stream`
+   - Input: `rtmp://0.0.0.0:1935/listen/[YOUR_STREAM_KEY]`
+   - Or if nginx is on another machine: `rtmp://[SERVER_IP]:1935/listen/[YOUR_STREAM_KEY]`
 
-**Option 2: OBS on Same Machine**
+**Option 3: OBS on Same Machine**
 
 Add Media Source with input:
 ```
-rtmp://localhost:1935/live/stream
+rtmp://localhost:1935/listen/[YOUR_STREAM_KEY]
 ```
 
 ### Stream Flow
@@ -157,10 +162,12 @@ rtmp://localhost:1935/live/stream
 ```
 Phone (Streamlabs/Larix)
     ↓ publishes with stream key
-rtmp://server:1935/live/[key]
+rtmp://server:1935/publish/[key]
     ↓ validates key
-nginx-rtmp (authenticates)
+nginx-rtmp (authenticates + relays)
     ↓ relays to
+rtmp://server:1935/listen/[key]
+    ↓ pulled by
 OBS (receives stream)
 ```
 
@@ -584,7 +591,7 @@ The Docker container is configured for the America/New_York timezone. To change 
 - Check the stream key matches what's configured on the server
 - View server logs: `./docker.sh log`
 - Look for: `✗ Invalid stream key - denying publish`
-- Ensure you're publishing to: `rtmp://server:1935/live/[YOUR_KEY]`
+- Ensure you're publishing to: `rtmp://server:1935/publish/[YOUR_KEY]`
 
 **RTMP stream not reaching OBS:**
 - Verify `rtmp-push.conf` exists and contains correct OBS IP

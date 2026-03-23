@@ -10,7 +10,9 @@ RUN apt-get update && apt-get install -y \
     libpcre3-dev \
     libssl-dev \
     zlib1g-dev \
-    libluajit-5.1-dev \
+    libluajit2-5.1-dev \
+    lua-resty-core \
+    lua-resty-lrucache \
     supervisor \
     git \
     wget \
@@ -21,11 +23,7 @@ WORKDIR /tmp
 RUN wget http://nginx.org/download/nginx-1.24.0.tar.gz && \
     tar -zxvf nginx-1.24.0.tar.gz && \
     git clone https://github.com/arut/nginx-rtmp-module.git && \
-    git clone https://github.com/openresty/lua-nginx-module.git && \
-    git clone https://github.com/vision5/ngx_devel_kit.git && \
     cd nginx-1.24.0 && \
-    export LUAJIT_LIB=/usr/lib/x86_64-linux-gnu && \
-    export LUAJIT_INC=/usr/include/luajit-2.1 && \
     ./configure \
         --prefix=/usr/local/nginx \
         --with-http_ssl_module \
@@ -47,9 +45,7 @@ RUN wget http://nginx.org/download/nginx-1.24.0.tar.gz && \
         --with-stream_ssl_module \
         --with-stream_realip_module \
         --with-ld-opt="-Wl,-rpath,/usr/lib/x86_64-linux-gnu/" \
-        --add-module=../nginx-rtmp-module \
-        --add-module=../ngx_devel_kit \
-        --add-module=../lua-nginx-module && \
+        --add-module=../nginx-rtmp-module && \
     make -j$(nproc) && \
     make install && \
     cd / && \
@@ -76,7 +72,7 @@ COPY html/ /app/html/
 # Create rtmp-push.conf from example if it doesn't exist
 RUN if [ ! -f rtmp-push.conf ]; then \
         echo "# Auto-generated placeholder - edit with your OBS IP" > /app/rtmp-push.conf && \
-        echo "# Example: push rtmp://192.168.1.100:1935/live/stream;" >> /app/rtmp-push.conf && \
+        echo "# Example: push rtmp://192.168.1.100:1935/listen;" >> /app/rtmp-push.conf && \
         echo "" >> /app/rtmp-push.conf; \
     fi
 

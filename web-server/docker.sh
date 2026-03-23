@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Docker management script for RaceBox Telemetry Server
-# Usage: ./docker.sh [daemon|stop|restart|start|log] [options]
+# Usage: ./docker.sh [daemon|stop|restart|start|log|smoke-rtmp] [options]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="racebox-telemetry-server"
@@ -43,8 +43,21 @@ while [[ $# -gt 0 ]]; do
             STREAM_KEY="-e STREAM_KEY=$2"
             shift 2
             ;;
-        daemon|stop|restart|start|log|build)
-            COMMAND="$1"
+        daemon|stop|restart|start|log|build|smoke-rtmp)
+            if [ -z "${COMMAND:-}" ]; then
+                COMMAND="$1"
+            elif { [ "$COMMAND" = "restart" ] && { [ "$1" = "daemon" ] || [ "$1" = "start" ]; }; } || \
+                 { { [ "$COMMAND" = "daemon" ] || [ "$COMMAND" = "start" ]; } && [ "$1" = "restart" ]; }; then
+                # Allow common alias forms like: ./docker.sh restart daemon
+                COMMAND="restart"
+            elif [ "$COMMAND" = "$1" ]; then
+                # Ignore duplicate same command token
+                :
+            else
+                echo "Error: Multiple conflicting commands: $COMMAND and $1"
+                echo "Use one command: daemon|start|stop|restart|log|build|smoke-rtmp"
+                exit 1
+            fi
             shift
             ;;
         *)
@@ -131,12 +144,12 @@ start_container() {
         print_warning "rtmp-push.conf not found!"
         print_info "Creating rtmp-push.conf from example template..."
         print_info "Please edit rtmp-push.conf with your OBS machine IP address"
-        print_info "Example: push rtmp://192.168.1.100:1935/live/stream;"
+        print_info "Example: push rtmp://192.168.1.100:1935/listen;"
         if [ -f "${SCRIPT_DIR}/rtmp-push.conf.example" ]; then
             cp "${SCRIPT_DIR}/rtmp-push.conf.example" "${SCRIPT_DIR}/rtmp-push.conf"
         else
             echo "# RTMP Push Configuration - Edit with your OBS IP" > "${SCRIPT_DIR}/rtmp-push.conf"
-            echo "# Example: push rtmp://192.168.1.100:1935/live/stream;" >> "${SCRIPT_DIR}/rtmp-push.conf"
+            echo "# Example: push rtmp://192.168.1.100:1935/listen;" >> "${SCRIPT_DIR}/rtmp-push.conf"
         fi
     fi
 
@@ -198,7 +211,8 @@ start_container() {
     if [ $? -eq 0 ]; then
         print_success "Container started successfully"
         print_info "Access server at: http://localhost:$PORT"
-        print_info "RTMP stream: rtmp://localhost:1935/live/stream"
+        print_info "RTMP publish: rtmp://localhost:1935/publish/<stream-key>"
+        print_info "RTMP listen: rtmp://localhost:1935/listen/<stream-key>"
         print_info "Nginx stats: http://localhost:5001/stat"
         print_info "View logs with: ./docker.sh log"
     else
@@ -216,6 +230,143 @@ view_logs() {
         print_error "Container does not exist"
         exit 1
     fi
+}
+
+extract_stream_key() {
+    if [ -n "$STREAM_KEY" ]; then
+        echo "$STREAM_KEY" | sed 's/-e STREAM_KEY=//'
+        return
+    fi
+
+    if [ "$(container_exists)" ]; then
+        docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null \
+            | sed -n 's/^STREAM_KEY=//p' \
+            | head -n 1
+        return
+    fi
+
+    echo ""
+}
+
+run_with_timeout() {
+    local timeout_s="$1"
+    shift
+
+    "$@" &
+    local cmd_pid=$!
+
+    (
+        sleep "$timeout_s"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            kill "$cmd_pid" 2>/dev/null
+        fi
+    ) &
+    local watchdog_pid=$!
+
+    wait "$cmd_pid"
+    local cmd_rc=$?
+
+    kill "$watchdog_pid" 2>/dev/null
+    wait "$watchdog_pid" 2>/dev/null
+
+    return "$cmd_rc"
+}
+
+smoke_rtmp() {
+    if [ ! "$(is_running)" ]; then
+        print_error "Container is not running. Start it first with: ./docker.sh --stream-key <key> daemon"
+        exit 1
+    fi
+
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        print_error "ffmpeg not found on host. Install ffmpeg to run smoke-rtmp."
+        exit 1
+    fi
+
+    local key
+    key="$(extract_stream_key)"
+    if [ -z "$key" ]; then
+        key="racebox-default-key"
+    fi
+
+    local publish_url="rtmp://127.0.0.1:1935/publish/$key"
+    local listen_url="rtmp://127.0.0.1:1935/listen/$key"
+    local publisher_log="/tmp/racebox-smoke-publisher.log"
+    local listener_log="/tmp/racebox-smoke-listener.log"
+
+    rm -f "$publisher_log" "$listener_log"
+
+    # Smoke test is deterministic only when no external clients are already attached.
+    local active_remote
+    active_remote="$(docker exec "$CONTAINER_NAME" sh -lc "wget -qO- http://127.0.0.1:8080/stat" 2>/dev/null \
+        | grep -Eo '<address>[^<]+' \
+        | sed 's/<address>//' \
+        | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.1:1935/listen|172\.17\.0\.1)$' || true)"
+    if [ -n "$active_remote" ]; then
+        print_error "Smoke test aborted: active external RTMP client(s) already connected."
+        echo "$active_remote" | sed 's/^/  - /'
+        print_info "Stop existing RTMP publishers/players and retry."
+        exit 1
+    fi
+
+    print_info "Running RTMP smoke test with stream key: $key"
+    print_info "Publishing to: $publish_url"
+    print_info "Listening from: $listen_url"
+
+    ffmpeg -hide_banner -loglevel error -re \
+        -f lavfi -i testsrc=size=640x360:rate=30 \
+        -f lavfi -i sine=frequency=1000 \
+        -c:v libx264 -pix_fmt yuv420p -profile:v baseline -level 3.1 \
+        -preset veryfast -tune zerolatency -g 30 -keyint_min 30 -sc_threshold 0 \
+        -c:a aac -ar 44100 -ac 1 -b:a 96k \
+        -f flv "$publish_url" >"$publisher_log" 2>&1 &
+    local publisher_pid=$!
+
+    sleep 3
+    if ! kill -0 "$publisher_pid" 2>/dev/null; then
+        print_error "Publisher exited early."
+        tail -n 60 "$publisher_log" 2>/dev/null
+        exit 1
+    fi
+
+    run_with_timeout 20 ffmpeg -hide_banner -loglevel info -t 6 -i "$listen_url" -f null - >"$listener_log" 2>&1
+    local listen_rc=$?
+
+    if kill -0 "$publisher_pid" 2>/dev/null; then
+        kill "$publisher_pid" 2>/dev/null
+        wait "$publisher_pid" 2>/dev/null
+    fi
+
+    if grep -Eq "video:[[:space:]]*[1-9]" "$listener_log" && grep -Eq "audio:[[:space:]]*[1-9]" "$listener_log"; then
+        print_success "RTMP smoke test passed: publish and listen are both carrying media."
+        return
+    fi
+
+    # Fallback: verify nginx sees non-zero bytes on listen stream for this key.
+    local listen_bytes
+    listen_bytes="$(docker exec "$CONTAINER_NAME" sh -lc "wget -qO- http://127.0.0.1:8080/stat" 2>/dev/null \
+        | perl -0777 -ne 'if (/<application>\\s*<name>listen<\\/name>.*?<stream>\\s*<name>'\"$key\"'<\\/name>.*?<bytes_in>(\\d+)<\\/bytes_in>/s) { print \$1 }')"
+    if [ -n "$listen_bytes" ] && [ "$listen_bytes" -gt 0 ] 2>/dev/null; then
+        print_success "RTMP smoke test passed: nginx listen stream received ${listen_bytes} bytes."
+        return
+    fi
+
+    if [ $listen_rc -ne 0 ]; then
+        print_error "Smoke test failed while consuming /listen stream."
+        echo ""
+        print_info "Listener log tail:"
+        tail -n 80 "$listener_log" 2>/dev/null
+        echo ""
+        print_info "Publisher log tail:"
+        tail -n 80 "$publisher_log" 2>/dev/null
+        exit 1
+    fi
+
+    print_error "Smoke test did not detect media bytes on listener."
+    echo ""
+    print_info "Listener log tail:"
+    tail -n 80 "$listener_log" 2>/dev/null
+    exit 1
 }
 
 # Main command execution
@@ -237,9 +388,12 @@ case $COMMAND in
     log)
         view_logs
         ;;
+    smoke-rtmp)
+        smoke_rtmp
+        ;;
     *)
         print_error "Unknown command: $COMMAND"
-        echo "Usage: $0 [daemon|stop|restart|start|log|build] [options]"
+        echo "Usage: $0 [daemon|stop|restart|start|log|build|smoke-rtmp] [options]"
         echo ""
         echo "Commands:"
         echo "  daemon|start  - Start container as daemon"
@@ -247,6 +401,7 @@ case $COMMAND in
         echo "  restart       - Restart container"
         echo "  log           - View container logs"
         echo "  build         - Build Docker image"
+        echo "  smoke-rtmp    - Run end-to-end RTMP publish/listen smoke test"
         echo ""
         echo "Options:"
         echo "  -p|--port PORT       - Override web server port (default: $DEFAULT_PORT)"
@@ -263,8 +418,8 @@ case $COMMAND in
         echo "RTMP Setup:"
         echo "  1. Copy rtmp-push.conf.example to rtmp-push.conf"
         echo "  2. Edit rtmp-push.conf with your OBS machine IP"
-        echo "  3. Configure phone to stream to rtmp://server-ip:1935/live/stream"
-        echo "  4. Configure OBS Media Source with same RTMP URL"
+        echo "  3. Configure phone to stream to rtmp://server-ip:1935/publish/[stream-key]"
+        echo "  4. Configure OBS Media Source with rtmp://server-ip:1935/listen/[stream-key]"
         echo ""
         echo "Examples:"
         echo "  $0 daemon                              # Start on default port $DEFAULT_PORT"
@@ -274,6 +429,7 @@ case $COMMAND in
         echo "  $0 --stream-key mySecretKey123 daemon  # Start with custom stream key"
         echo "  $0 --network host daemon               # Start with host networking"
         echo "  $0 log                                 # View logs"
+        echo "  $0 smoke-rtmp                          # Verify /publish -> /listen media flow"
         exit 1
         ;;
 esac
