@@ -1,5 +1,5 @@
 # MediaMTX configuration for RaceBox Telemetry Server
-logLevel: info
+logLevel: warn
 logDestinations: [stdout]
 
 # Network addresses
