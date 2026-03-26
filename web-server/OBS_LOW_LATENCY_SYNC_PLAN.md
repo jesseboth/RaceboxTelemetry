@@ -81,20 +81,39 @@ Log these events with timestamps:
 - drift corrections applied
 
 ## Rollout Plan
-1. **Phase A (Structure)**
-   - Add `/obs-live` page and route.
-   - Render existing telemetry overlay in this page.
-   - Keep existing ingest and auth.
-2. **Phase B (Low-latency video egress)**
-   - Add WebRTC (preferred) or MSE path for browser playback.
-   - Wire stream key selection in page URL.
-3. **Phase C (Sync engine)**
-   - Implement baseline offset + drift correction logic in page.
-   - Add `/sync/debug` endpoint.
-4. **Phase D (Validation)**
-   - Run repeated publish stop/start tests.
-   - Compare overlay and video alignment over long sessions.
-   - Tune smoothing thresholds and reconnect behavior.
+
+### Phase A (Structure) — DONE
+- [x] RTMP ingest with stream key auth (`/rtmp/on_publish`, `/rtmp/on_publish_done`)
+- [x] `currentStreamStart_ms` tracked in Node memory on publish start
+- [x] `session.startTime_unix_ms` tracked on first telemetry sample
+- [x] `telemetry_delay_ms` (`offset_ms`) computed at stream/session start and broadcast via WebSocket
+- [x] Stream lifecycle events (`rtmp-stream-start`, `rtmp-stream-stop`, `session-start`) broadcast to all WS clients
+- [x] `/rtmp/sync` endpoint exposes live sync state (covers most of the planned `/sync/debug`)
+- [x] Telemetry overlay (`/`) renders speed + g-force with delay/sync logic
+- [x] `logSyncSnapshot()` logs publish start/stop and session events with timestamps
+
+### Phase B (Low-latency video egress) — NOT STARTED
+- [ ] Integrate mediasoup to bridge RTMP → WebRTC
+  - This is the largest remaining task
+  - mediasoup runs as a Node.js SFU inside the existing server process (or as a sidecar)
+  - nginx-rtmp pushes the ingest stream to an ffmpeg process that feeds mediasoup via plain RTP
+- [ ] Add `/obs-live` route and page
+- [ ] Embed `<video>` element in `/obs-live`, connected to WebRTC (or MSE/fMP4 as fallback)
+- [ ] Wire stream key selection via page URL (`?key=<stream-key>`)
+
+### Phase C (Sync engine in browser) — PARTIALLY DONE
+- [x] Phone clock offset detection (running average over 10 samples, applied per telemetry point)
+- [x] Timestamp-based telemetry buffering: each point gets a `_displayTime` derived from phone timestamp + clock offset + video delay
+- [x] Fallback to fixed-delay sync when RTMP is not live or clock offset not yet known
+- [x] Buffer cleared and sync mode toggled on stream start/stop events
+- [ ] Drift measurement against `video.currentTime` (blocked on Phase B — needs a `<video>` element)
+- [ ] Gradual drift correction (±5–20ms per second) once video element exists
+- [ ] `/sync/debug` endpoint with `drift_ms` field (current `/rtmp/sync` is missing this)
+
+### Phase D (Validation) — NOT STARTED
+- [ ] Run repeated publish stop/start tests
+- [ ] Compare overlay and video alignment over long sessions
+- [ ] Tune smoothing thresholds and reconnect behavior
 
 ## Acceptance Criteria
 - Repeated publish stop/start keeps playback and telemetry sync stable.
@@ -106,3 +125,4 @@ Log these events with timestamps:
 - RTMP ingest remains valid and simple for phone apps.
 - Browser-based consume gives more deterministic control over timing logic than OBS consuming raw RTMP directly.
 - For strictest latency and timing control, WebRTC egress is preferred over MSE/HLS.
+- The telemetry sync engine (clock offset, buffering, reconnect handling) is essentially complete. The dominant remaining work is Phase B: getting a live video feed into the browser page.
