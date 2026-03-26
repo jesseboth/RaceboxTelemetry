@@ -22,7 +22,7 @@ const SYNC_LOG_INTERVAL_MS = parseInt(process.env.SYNC_LOG_INTERVAL_MS) || 0; //
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: false })); // nginx-rtmp sends callbacks as form-encoded POST
+app.use(express.urlencoded({ extended: false }));
 
 // Request logger (only in debug mode)
 if (DEBUG) {
@@ -458,24 +458,36 @@ function handleRtmpStreamStart(streamName, timestamp_ms) {
     logSyncSnapshot('rtmp-start');
 }
 
-// POST /rtmp/on_publish - Called by nginx on_publish: validates key and handles stream start
-app.post('/rtmp/on_publish', async (req, res) => {
-    const streamName = req.body.name || req.query.name || '';
+// POST /rtmp/auth - Called by MediaMTX externalAuthenticationURL to validate publish attempts
+// MediaMTX sends a JSON body: { action, path, protocol, ip, user, password, query, id }
+// Return 200 to allow, 4xx to deny.
+app.post('/rtmp/auth', (req, res) => {
+    const { action, path: streamPath } = req.body;
 
-    log('RTMP publish attempt:', streamName);
+    // Allow all read/play actions (OBS, browsers, etc.)
+    if (action !== 'publish') {
+        return res.status(200).send('OK');
+    }
 
-    const streamKey = streamName.split('/').pop();
+    const streamKey = (streamPath || '').split('/').pop();
 
     if (streamKey !== STREAM_KEY) {
         console.log('✗ Invalid stream key - denying publish:', streamKey);
         return res.status(403).send('Forbidden');
     }
 
-    log('✓ Valid stream key - allowing publish');
+    log('✓ Valid stream key - allowing publish:', streamPath);
+    res.status(200).send('OK');
+});
+
+// POST /rtmp/on_publish - Called by MediaMTX runOnPublish hook (fire-and-forget stream start event)
+// Auth is already validated by /rtmp/auth above; this just tracks the stream start timestamp.
+app.post('/rtmp/on_publish', async (req, res) => {
+    const streamName = req.body.name || req.query.name || '';
+
+    log('RTMP stream started:', streamName);
 
     const timestamp_ms = Date.now();
-
-    // Handle stream start logic immediately.
     handleRtmpStreamStart(streamName, timestamp_ms);
 
     res.status(200).send('OK');
@@ -688,8 +700,9 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Admin page: http://localhost:${PORT}/admin`);
     console.log(`API endpoint: http://localhost:${PORT}/telemetry`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
-    console.log(`RTMP publish: rtmp://localhost:1935/publish/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
-    console.log(`RTMP listen: rtmp://localhost:1935/listen/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
+    console.log(`RTMP publish (phone): rtmp://localhost:1935/live/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
+    console.log(`RTSP pull (OBS):      rtsp://localhost:8554/live/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
+    console.log(`RTMP pull (OBS alt):  rtmp://localhost:1935/live/${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
     console.log('='.repeat(60));
     if (DEBUG) {
         console.log('[DEBUG] Detailed logging enabled');

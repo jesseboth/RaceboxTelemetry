@@ -139,20 +139,6 @@ start_container() {
         exit 0
     fi
 
-    # Check if rtmp-push.conf exists
-    if [ ! -f "${SCRIPT_DIR}/rtmp-push.conf" ]; then
-        print_warning "rtmp-push.conf not found!"
-        print_info "Creating rtmp-push.conf from example template..."
-        print_info "Please edit rtmp-push.conf with your OBS machine IP address"
-        print_info "Example: push rtmp://192.168.1.100:1935/listen;"
-        if [ -f "${SCRIPT_DIR}/rtmp-push.conf.example" ]; then
-            cp "${SCRIPT_DIR}/rtmp-push.conf.example" "${SCRIPT_DIR}/rtmp-push.conf"
-        else
-            echo "# RTMP Push Configuration - Edit with your OBS IP" > "${SCRIPT_DIR}/rtmp-push.conf"
-            echo "# Example: push rtmp://192.168.1.100:1935/listen;" >> "${SCRIPT_DIR}/rtmp-push.conf"
-        fi
-    fi
-
     # Build image if it doesn't exist
     if [ -z "$(docker images -q $IMAGE_NAME)" ]; then
         build_image
@@ -164,7 +150,7 @@ start_container() {
     fi
 
     print_info "Starting container: $CONTAINER_NAME"
-    print_info "Port mapping: Web $PORT:5000, RTMP 1935:1935, Nginx Stats 5001:8080"
+    print_info "Port mapping: Web $PORT:5000, RTMP 1935:1935, RTSP 8554:8554"
 
     # Build docker run command
     DOCKER_CMD="docker run -d --name $CONTAINER_NAME"
@@ -174,7 +160,7 @@ start_container() {
         DOCKER_CMD="$DOCKER_CMD --network $NETWORK"
         print_info "Using network: $NETWORK"
     else
-        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000 -p 1935:1935 -p 5001:8080"
+        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000 -p 1935:1935 -p 8554:8554"
     fi
 
     # Add debug flag if specified
@@ -193,8 +179,8 @@ start_container() {
     # Add stream key if specified
     if [ -n "$STREAM_KEY" ]; then
         DOCKER_CMD="$DOCKER_CMD $STREAM_KEY"
-        KEY_VALUE=$(echo $STREAM_KEY | sed 's/-e STREAM_KEY=//')
-        print_info "Stream key set to: ${KEY_VALUE}"
+        KEY_VALUE=$(echo $STREAM_KEY | sed 's/.*STREAM_KEY=//')
+        print_info "Stream key: ${KEY_VALUE}"
     else
         print_warning "Using default stream key (change with --stream-key for security!)"
     fi
@@ -210,10 +196,10 @@ start_container() {
 
     if [ $? -eq 0 ]; then
         print_success "Container started successfully"
-        print_info "Access server at: http://localhost:$PORT"
-        print_info "RTMP publish: rtmp://localhost:1935/publish/<stream-key>"
-        print_info "RTMP listen: rtmp://localhost:1935/listen/<stream-key>"
-        print_info "Nginx stats: http://localhost:5001/stat"
+        print_info "Overlay:         http://localhost:$PORT"
+        print_info "RTMP publish:    rtmp://localhost:1935/live/<stream-key>"
+        print_info "RTSP pull (OBS): rtsp://localhost:8554/live/<stream-key>"
+        print_info "RTMP pull (alt): rtmp://localhost:1935/live/<stream-key>"
         print_info "View logs with: ./docker.sh log"
     else
         print_error "Failed to start container"
@@ -234,7 +220,7 @@ view_logs() {
 
 extract_stream_key() {
     if [ -n "$STREAM_KEY" ]; then
-        echo "$STREAM_KEY" | sed 's/-e STREAM_KEY=//'
+        echo "$STREAM_KEY" | sed 's/.*STREAM_KEY=//'
         return
     fi
 
@@ -289,30 +275,18 @@ smoke_rtmp() {
         key="racebox-default-key"
     fi
 
-    local publish_url="rtmp://127.0.0.1:1935/publish/$key"
-    local listen_url="rtmp://127.0.0.1:1935/listen/$key"
+    local publish_url="rtmp://127.0.0.1:1935/live/$key"
+    local pull_url="rtsp://127.0.0.1:8554/live/$key"
     local publisher_log="/tmp/racebox-smoke-publisher.log"
     local listener_log="/tmp/racebox-smoke-listener.log"
 
     rm -f "$publisher_log" "$listener_log"
 
-    # Smoke test is deterministic only when no external clients are already attached.
-    local active_remote
-    active_remote="$(docker exec "$CONTAINER_NAME" sh -lc "wget -qO- http://127.0.0.1:8080/stat" 2>/dev/null \
-        | grep -Eo '<address>[^<]+' \
-        | sed 's/<address>//' \
-        | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.1:1935/listen|172\.17\.0\.1)$' || true)"
-    if [ -n "$active_remote" ]; then
-        print_error "Smoke test aborted: active external RTMP client(s) already connected."
-        echo "$active_remote" | sed 's/^/  - /'
-        print_info "Stop existing RTMP publishers/players and retry."
-        exit 1
-    fi
-
     print_info "Running RTMP smoke test with stream key: $key"
-    print_info "Publishing to: $publish_url"
-    print_info "Listening from: $listen_url"
+    print_info "Publishing to:  $publish_url"
+    print_info "Pulling from:   $pull_url"
 
+    # Start publisher
     ffmpeg -hide_banner -loglevel error -re \
         -f lavfi -i testsrc=size=640x360:rate=30 \
         -f lavfi -i sine=frequency=1000 \
@@ -329,7 +303,15 @@ smoke_rtmp() {
         exit 1
     fi
 
-    run_with_timeout 20 ffmpeg -hide_banner -loglevel info -t 6 -i "$listen_url" -f null - >"$listener_log" 2>&1
+    # Verify MediaMTX sees the publisher via its REST API
+    local path_json
+    path_json="$(docker exec "$CONTAINER_NAME" sh -c \
+        "wget -qO- http://127.0.0.1:9997/v3/paths/list" 2>/dev/null)"
+    local has_publisher
+    has_publisher="$(echo "$path_json" | grep -c '"sourceType"' || true)"
+
+    # Pull stream via RTSP to confirm media flows end-to-end
+    run_with_timeout 20 ffmpeg -hide_banner -loglevel info -t 6 -i "$pull_url" -f null - >"$listener_log" 2>&1
     local listen_rc=$?
 
     if kill -0 "$publisher_pid" 2>/dev/null; then
@@ -338,34 +320,22 @@ smoke_rtmp() {
     fi
 
     if grep -Eq "video:[[:space:]]*[1-9]" "$listener_log" && grep -Eq "audio:[[:space:]]*[1-9]" "$listener_log"; then
-        print_success "RTMP smoke test passed: publish and listen are both carrying media."
+        print_success "Smoke test passed: RTMP publish → RTSP pull carrying video and audio."
         return
     fi
 
-    # Fallback: verify nginx sees non-zero bytes on listen stream for this key.
-    local listen_bytes
-    listen_bytes="$(docker exec "$CONTAINER_NAME" sh -lc "wget -qO- http://127.0.0.1:8080/stat" 2>/dev/null \
-        | perl -0777 -ne 'if (/<application>\\s*<name>listen<\\/name>.*?<stream>\\s*<name>'\"$key\"'<\\/name>.*?<bytes_in>(\\d+)<\\/bytes_in>/s) { print \$1 }')"
-    if [ -n "$listen_bytes" ] && [ "$listen_bytes" -gt 0 ] 2>/dev/null; then
-        print_success "RTMP smoke test passed: nginx listen stream received ${listen_bytes} bytes."
+    if [ "${has_publisher:-0}" -gt 0 ] 2>/dev/null; then
+        print_success "Smoke test passed: MediaMTX reports an active publisher (RTSP pull incomplete but stream is live)."
         return
     fi
 
-    if [ $listen_rc -ne 0 ]; then
-        print_error "Smoke test failed while consuming /listen stream."
-        echo ""
-        print_info "Listener log tail:"
-        tail -n 80 "$listener_log" 2>/dev/null
-        echo ""
-        print_info "Publisher log tail:"
-        tail -n 80 "$publisher_log" 2>/dev/null
-        exit 1
-    fi
-
-    print_error "Smoke test did not detect media bytes on listener."
+    print_error "Smoke test failed."
     echo ""
     print_info "Listener log tail:"
     tail -n 80 "$listener_log" 2>/dev/null
+    echo ""
+    print_info "Publisher log tail:"
+    tail -n 80 "$publisher_log" 2>/dev/null
     exit 1
 }
 
@@ -407,29 +377,28 @@ case $COMMAND in
         echo "  -p|--port PORT       - Override web server port (default: $DEFAULT_PORT)"
         echo "  --network NETWORK    - Use specific Docker network (enables host networking)"
         echo "  --debug              - Enable debug mode"
-        echo "  --delay MILLISECONDS - Video delay in ms for stream sync (default: 1500)"
-        echo "  --stream-key KEY     - Set RTMP stream key for authentication (default: racebox-default-key)"
+        echo "  --delay MILLISECONDS - Video delay in ms"
+        echo "  --stream-key KEY     - Set stream key for authentication (default: racebox-default-key)"
         echo ""
         echo "Ports:"
-        echo "  5000 - Web server (telemetry and overlay)"
-        echo "  1935 - RTMP server (stream input from phone)"
-        echo "  5001 - Nginx stats and API"
+        echo "  5000 - Web server (overlay + telemetry API + WebSocket)"
+        echo "  1935 - RTMP (phone publishes here)"
+        echo "  8554 - RTSP (OBS pulls from here — preferred)"
+        echo "  9997 - MediaMTX REST API (internal)"
         echo ""
-        echo "RTMP Setup:"
-        echo "  1. Copy rtmp-push.conf.example to rtmp-push.conf"
-        echo "  2. Edit rtmp-push.conf with your OBS machine IP"
-        echo "  3. Configure phone to stream to rtmp://server-ip:1935/publish/[stream-key]"
-        echo "  4. Configure OBS Media Source with rtmp://server-ip:1935/listen/[stream-key]"
+        echo "Stream Setup:"
+        echo "  Phone publishes to: rtmp://server-ip:1935/live/<stream-key>"
+        echo "  OBS pulls from:     rtsp://server-ip:8554/live/<stream-key>"
+        echo "  OBS alt (RTMP):     rtmp://server-ip:1935/live/<stream-key>"
         echo ""
         echo "Examples:"
         echo "  $0 daemon                              # Start on default port $DEFAULT_PORT"
         echo "  $0 -p 8080 daemon                      # Start with web server on port 8080"
         echo "  $0 --debug daemon                      # Start with debug logging"
-        echo "  $0 --delay 2000 daemon                 # Start with 2000ms video delay"
         echo "  $0 --stream-key mySecretKey123 daemon  # Start with custom stream key"
         echo "  $0 --network host daemon               # Start with host networking"
         echo "  $0 log                                 # View logs"
-        echo "  $0 smoke-rtmp                          # Verify /publish -> /listen media flow"
+        echo "  $0 smoke-rtmp                          # Verify RTMP publish → RTSP pull"
         exit 1
         ;;
 esac

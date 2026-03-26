@@ -1,0 +1,30 @@
+# MediaMTX configuration for RaceBox Telemetry Server
+logLevel: info
+logDestinations: [stdout]
+
+# Network addresses
+rtmpAddress: :1935
+rtspAddress: :8554
+srtAddress: :8890
+hlsAddress: :8888
+webrtcAddress: :8889
+apiAddress: :9997
+
+# Enabled protocols
+rtmp: yes
+rtsp: yes   # OBS pulls via RTSP
+srt: no     # Enable later if needed
+hls: no
+webrtc: no
+api: yes    # MediaMTX REST API on port 9997
+
+# Stream key auth via Node.js
+# Returns 200 to allow, 4xx to deny
+externalAuthenticationURL: http://localhost:5000/rtmp/auth
+
+paths:
+  # Phone publishes to: rtmp://host:1935/live/<stream-key>
+  # OBS pulls from:     rtsp://host:8554/live/<stream-key>
+  #                  or rtmp://host:1935/live/<stream-key>
+  # TODO: add runOnPublish/runOnUnpublish hooks for telemetry sync once field names confirmed for this MediaMTX version
+  ~^live/.*$:
