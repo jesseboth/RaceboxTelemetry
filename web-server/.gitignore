@@ -4,3 +4,4 @@ archive/
 *.log
 .DS_Store
 rtmp-push.conf
+secret.sh

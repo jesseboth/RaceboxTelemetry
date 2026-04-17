@@ -17,6 +17,7 @@
     "cors": "^2.8.5",
     "uuid": "^9.0.0",
     "ws": "^8.18.0",
-    "node-fetch": "^2.6.1"
+    "node-fetch": "^2.6.1",
+    "obs-websocket-js": "^5.0.6"
   }
 }

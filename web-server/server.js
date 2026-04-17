@@ -18,6 +18,25 @@ let SEND_FREQUENCY_HZ = parseInt(process.env.SEND_FREQUENCY_HZ) || 10; // Defaul
 let MAX_G_RESET_INTERVAL_MIN = parseInt(process.env.MAX_G_RESET_INTERVAL_MIN) || 5; // Default 5 minutes
 const STREAM_KEY = process.env.STREAM_KEY || 'racebox-default-key'; // Change this for security!
 const SYNC_LOG_INTERVAL_MS = parseInt(process.env.SYNC_LOG_INTERVAL_MS) || 0; // 0 disables periodic sync logs
+let OBS_WEBHOOK_IP = (process.env.OBS_WEBHOOK_IP || '').trim(); // Example: 192.168.1.50
+const OBS_WEBHOOK_PROTOCOL = (process.env.OBS_WEBHOOK_PROTOCOL || 'http').trim();
+const OBS_WEBHOOK_PORT = parseInt(process.env.OBS_WEBHOOK_PORT);
+const OBS_WEBHOOK_PATH = (() => {
+    const configuredPath = (process.env.OBS_WEBHOOK_PATH || '/webhook/obs').trim();
+    if (!configuredPath) {
+        return '/webhook/obs';
+    }
+    return configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
+})();
+const OBS_NO_FLOW_STOP_MS = Math.max(
+    1000,
+    parseInt(process.env.OBS_NO_FLOW_STOP_MS) || 3 * 60 * 1000 // 3 minutes
+);
+let OBS_CONTROL_MODE = (process.env.OBS_CONTROL_MODE || 'auto').trim().toLowerCase(); // auto | ws | webhook
+let OBS_WS_HOST = (process.env.OBS_WS_HOST || '').trim();
+let OBS_WS_PORT = parseInt(process.env.OBS_WS_PORT) || 4455;
+let OBS_WS_PASSWORD = process.env.OBS_WS_PASSWORD || '';
+const OBS_WS_SECURE = process.env.OBS_WS_SECURE === 'true';
 
 // Middleware
 app.use(cors());
@@ -113,7 +132,12 @@ function broadcastConfig() {
             video_delay_ms: VIDEO_DELAY_MS,
             send_frequency_hz: SEND_FREQUENCY_HZ,
             send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ),
-            max_g_reset_interval_min: MAX_G_RESET_INTERVAL_MIN
+            max_g_reset_interval_min: MAX_G_RESET_INTERVAL_MIN,
+            obs_webhook_ip: OBS_WEBHOOK_IP || null,
+            obs_no_flow_stop_ms: OBS_NO_FLOW_STOP_MS,
+            obs_control_mode: OBS_CONTROL_MODE,
+            obs_ws_host: OBS_WS_HOST || null,
+            obs_ws_port: OBS_WS_PORT
         }
     });
     wsClients.forEach((client) => {
@@ -133,6 +157,11 @@ let sessionTimer = null;
 // Track stream start in Node memory so startSession() doesn't race against the fire-and-forget to nginx
 let currentStreamStart_ms = null;
 let lastSyncLogAt_ms = 0;
+let obsNoFlowStopTimer = null;
+let obsWsClient = null;
+let obsWsConnected = false;
+let obsWsConnectPromise = null;
+let obsWsUnavailable = false;
 
 // Debug logging
 function log(...args) {
@@ -168,6 +197,229 @@ function logSyncSnapshot(reason) {
         `stream_start_ms=${s.stream_start_ms ?? 'null'} session_start_ms=${s.session_start_ms ?? 'null'} ` +
         `telemetry_delay_ms=${s.telemetry_delay_ms ?? 'null'} video_delay_ms=${s.video_delay_ms}`
     );
+}
+
+function getObsWebhookUrl() {
+    if (!OBS_WEBHOOK_IP) {
+        return null;
+    }
+
+    const hasValidPort = Number.isInteger(OBS_WEBHOOK_PORT) && OBS_WEBHOOK_PORT > 0 && OBS_WEBHOOK_PORT <= 65535;
+    const portPart = hasValidPort ? `:${OBS_WEBHOOK_PORT}` : '';
+    return `${OBS_WEBHOOK_PROTOCOL}://${OBS_WEBHOOK_IP}${portPart}${OBS_WEBHOOK_PATH}`;
+}
+
+function getObsWsUrl() {
+    if (!OBS_WS_HOST) {
+        return null;
+    }
+
+    const protocol = OBS_WS_SECURE ? 'wss' : 'ws';
+    return `${protocol}://${OBS_WS_HOST}:${OBS_WS_PORT}`;
+}
+
+function shouldUseObsWebSocketControl() {
+    if (OBS_CONTROL_MODE === 'ws' || OBS_CONTROL_MODE === 'websocket') {
+        return true;
+    }
+    if (OBS_CONTROL_MODE === 'webhook') {
+        return false;
+    }
+    return Boolean(OBS_WS_HOST);
+}
+
+function initObsWsClient() {
+    if (obsWsUnavailable) {
+        return false;
+    }
+    if (obsWsClient) {
+        return true;
+    }
+
+    try {
+        const obsModule = require('obs-websocket-js');
+        const OBSWebSocket = obsModule.default || obsModule.OBSWebSocket || obsModule;
+        obsWsClient = new OBSWebSocket();
+
+        if (typeof obsWsClient.on === 'function') {
+            obsWsClient.on('ConnectionClosed', () => {
+                obsWsConnected = false;
+                console.warn('[OBS WS] Connection closed');
+            });
+            obsWsClient.on('ConnectionError', (error) => {
+                obsWsConnected = false;
+                console.warn('[OBS WS] Connection error:', error?.message || String(error));
+            });
+        }
+
+        return true;
+    } catch (error) {
+        obsWsUnavailable = true;
+        console.warn("[OBS WS] 'obs-websocket-js' not installed. Falling back to webhook control.");
+        return false;
+    }
+}
+
+async function ensureObsWsConnected() {
+    const wsUrl = getObsWsUrl();
+    if (!wsUrl) {
+        return false;
+    }
+    if (obsWsConnected) {
+        return true;
+    }
+    if (!initObsWsClient()) {
+        return false;
+    }
+    if (obsWsConnectPromise) {
+        return obsWsConnectPromise;
+    }
+
+    obsWsConnectPromise = (async () => {
+        try {
+            console.log(`[OBS WS] Connecting to ${wsUrl}`);
+            await obsWsClient.connect(wsUrl, OBS_WS_PASSWORD);
+            obsWsConnected = true;
+            console.log('[OBS WS] Connected');
+            return true;
+        } catch (error) {
+            obsWsConnected = false;
+            console.warn('[OBS WS] Connect failed:', error?.message || String(error));
+            return false;
+        } finally {
+            obsWsConnectPromise = null;
+        }
+    })();
+
+    return obsWsConnectPromise;
+}
+
+function isExpectedObsStateError(action, message) {
+    if (!message) {
+        return false;
+    }
+
+    if (action === 'start_stream') {
+        return /already|running|active/i.test(message);
+    }
+    if (action === 'stop_stream') {
+        return /already|not.*running|not.*active|stopped/i.test(message);
+    }
+    return false;
+}
+
+async function sendObsWebSocketCommand(action) {
+    const requestType = action === 'start_stream'
+        ? 'StartStream'
+        : action === 'stop_stream'
+            ? 'StopStream'
+            : null;
+
+    if (!requestType) {
+        console.warn(`[OBS WS] Unsupported action '${action}'`);
+        return false;
+    }
+
+    const wsUrl = getObsWsUrl();
+    if (!wsUrl) {
+        return false;
+    }
+
+    const connected = await ensureObsWsConnected();
+    if (!connected) {
+        return false;
+    }
+
+    try {
+        console.log(`[OBS WS] Sending '${requestType}' to ${wsUrl}`);
+        await obsWsClient.call(requestType);
+        console.log(`[OBS WS] '${requestType}' sent successfully`);
+        return true;
+    } catch (error) {
+        const msg = error?.message || String(error);
+        if (isExpectedObsStateError(action, msg)) {
+            console.log(`[OBS WS] '${requestType}' ignored (${msg})`);
+            return true;
+        }
+
+        if (/not connected|socket|closed|identify/i.test(msg)) {
+            obsWsConnected = false;
+        }
+        console.warn(`[OBS WS] '${requestType}' error: ${msg}`);
+        return false;
+    }
+}
+
+async function sendObsWebhook(action, extraPayload = {}) {
+    const webhookUrl = getObsWebhookUrl();
+    if (!webhookUrl) {
+        console.log(`[OBS WEBHOOK] Skipping '${action}' - OBS_WEBHOOK_IP is not configured`);
+        return;
+    }
+
+    const payload = {
+        action,
+        timestamp_ms: Date.now(),
+        stream_live: currentStreamStart_ms !== null,
+        ...extraPayload
+    };
+
+    try {
+        console.log(`[OBS WEBHOOK] Sending '${action}' to ${webhookUrl}`);
+        const response = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            timeout: 5000
+        });
+
+        if (!response.ok) {
+            console.warn(`[OBS WEBHOOK] '${action}' failed: ${response.status} ${response.statusText}`);
+            return;
+        }
+
+        console.log(`[OBS WEBHOOK] '${action}' sent successfully`);
+    } catch (error) {
+        console.warn(`[OBS WEBHOOK] '${action}' error:`, error.message);
+    }
+}
+
+async function dispatchObsControl(action, extraPayload = {}) {
+    if (shouldUseObsWebSocketControl()) {
+        const sentViaWs = await sendObsWebSocketCommand(action);
+        if (sentViaWs) {
+            return;
+        }
+        console.warn('[OBS CONTROL] WebSocket command failed, trying webhook fallback');
+    }
+    await sendObsWebhook(action, extraPayload);
+}
+
+function clearObsNoFlowStopTimer(reason) {
+    if (obsNoFlowStopTimer) {
+        clearTimeout(obsNoFlowStopTimer);
+        obsNoFlowStopTimer = null;
+        log(`[OBS WEBHOOK] Cleared pending stop timer (${reason})`);
+    }
+}
+
+function scheduleObsNoFlowStopWebhook(reason) {
+    clearObsNoFlowStopTimer('reschedule');
+    obsNoFlowStopTimer = setTimeout(() => {
+        obsNoFlowStopTimer = null;
+
+        if (currentStreamStart_ms !== null) {
+            log('[OBS WEBHOOK] Skip delayed stop - stream is live again');
+            return;
+        }
+
+        void dispatchObsControl('stop_stream', {
+            reason,
+            no_flow_for_ms: OBS_NO_FLOW_STOP_MS
+        });
+    }, OBS_NO_FLOW_STOP_MS);
+
+    log(`[OBS WEBHOOK] Scheduled stop webhook in ${OBS_NO_FLOW_STOP_MS}ms (${reason})`);
 }
 
 // Start a new telemetry session
@@ -353,6 +605,11 @@ app.get('/config', async (req, res) => {
         send_interval_ms: Math.round(1000 / SEND_FREQUENCY_HZ),
         update_interval_ms: 100,
         max_g_reset_interval_min: MAX_G_RESET_INTERVAL_MIN,
+        obs_webhook_ip: OBS_WEBHOOK_IP || null,
+        obs_no_flow_stop_ms: OBS_NO_FLOW_STOP_MS,
+        obs_control_mode: OBS_CONTROL_MODE,
+        obs_ws_host: OBS_WS_HOST || null,
+        obs_ws_port: OBS_WS_PORT,
         session: currentSession
     };
 
@@ -369,7 +626,15 @@ app.get('/config', async (req, res) => {
 
 // POST /config - Update configuration
 app.post('/config', (req, res) => {
-    const { video_delay_ms, send_frequency_hz, max_g_reset_interval_min } = req.body;
+    const {
+        video_delay_ms,
+        send_frequency_hz,
+        max_g_reset_interval_min,
+        obs_webhook_ip,
+        obs_control_mode,
+        obs_ws_host,
+        obs_ws_port
+    } = req.body;
     let updated = false;
     const response = { status: 'ok' };
 
@@ -419,6 +684,87 @@ app.post('/config', (req, res) => {
         }
     }
 
+    if (obs_webhook_ip !== undefined) {
+        if (typeof obs_webhook_ip !== 'string') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_webhook_ip value (must be a string)'
+            });
+        }
+
+        const newIp = obs_webhook_ip.trim();
+        const looksValidHost = newIp === '' || /^[A-Za-z0-9.:\-]+$/.test(newIp);
+        if (!looksValidHost) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_webhook_ip format'
+            });
+        }
+
+        OBS_WEBHOOK_IP = newIp;
+        response.obs_webhook_ip = OBS_WEBHOOK_IP || null;
+        console.log(`OBS webhook IP ${OBS_WEBHOOK_IP ? `updated to ${OBS_WEBHOOK_IP}` : 'disabled'}`);
+
+        if (!OBS_WEBHOOK_IP) {
+            clearObsNoFlowStopTimer('obs webhook disabled');
+        }
+
+        updated = true;
+    }
+
+    if (obs_control_mode !== undefined) {
+        if (typeof obs_control_mode !== 'string') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_control_mode value (must be auto|ws|webhook)'
+            });
+        }
+
+        const newMode = obs_control_mode.trim().toLowerCase();
+        if (!['auto', 'ws', 'webhook', 'websocket'].includes(newMode)) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_control_mode value (must be auto|ws|webhook)'
+            });
+        }
+
+        OBS_CONTROL_MODE = newMode === 'websocket' ? 'ws' : newMode;
+        response.obs_control_mode = OBS_CONTROL_MODE;
+        console.log(`OBS control mode updated to ${OBS_CONTROL_MODE}`);
+        updated = true;
+    }
+
+    if (obs_ws_host !== undefined) {
+        if (typeof obs_ws_host !== 'string') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_ws_host value (must be a string)'
+            });
+        }
+
+        OBS_WS_HOST = obs_ws_host.trim();
+        obsWsConnected = false;
+        response.obs_ws_host = OBS_WS_HOST || null;
+        console.log(`OBS WS host ${OBS_WS_HOST ? `updated to ${OBS_WS_HOST}` : 'disabled'}`);
+        updated = true;
+    }
+
+    if (obs_ws_port !== undefined) {
+        const newPort = parseInt(obs_ws_port);
+        if (isNaN(newPort) || newPort < 1 || newPort > 65535) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid obs_ws_port value (must be 1-65535)'
+            });
+        }
+
+        OBS_WS_PORT = newPort;
+        obsWsConnected = false;
+        response.obs_ws_port = OBS_WS_PORT;
+        console.log(`OBS WS port updated to ${OBS_WS_PORT}`);
+        updated = true;
+    }
+
     if (updated) {
         // Broadcast config change to all connected overlays
         broadcastConfig();
@@ -437,6 +783,7 @@ function handleRtmpStreamStart(streamName, timestamp_ms) {
 
     // Store in Node memory so sync/status endpoints can respond without nginx Lua state.
     currentStreamStart_ms = timestamp_ms;
+    clearObsNoFlowStopTimer('rtmp stream resumed');
 
     // positive = stream started first (telemetry starts later), negative = telemetry started first
     const telemetryDelay = currentSession
@@ -454,6 +801,11 @@ function handleRtmpStreamStart(streamName, timestamp_ms) {
         currentSession.rtmp_stream_start_ms = timestamp_ms;
         log('Updated session with RTMP start time');
     }
+
+    void dispatchObsControl('start_stream', {
+        stream_name: streamName
+    });
+    console.log(`[OBS CONTROL] Requested OBS stream start for '${streamName}'`);
 
     logSyncSnapshot('rtmp-start');
 }
@@ -497,6 +849,7 @@ function handleRtmpStreamStop(timestamp_ms) {
     console.log(`📹 RTMP stream stopped at ${timestamp_ms}ms`);
     currentStreamStart_ms = null;
     broadcastMessage({ type: 'rtmp-stream-stop', timestamp_ms });
+    scheduleObsNoFlowStopWebhook('rtmp stream stopped');
     logSyncSnapshot('rtmp-stop');
 }
 
@@ -695,6 +1048,10 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Video delay: ${VIDEO_DELAY_MS}ms`);
     console.log(`Stream key: ${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
     console.log(`Sync log interval: ${SYNC_LOG_INTERVAL_MS}ms ${SYNC_LOG_INTERVAL_MS > 0 ? '(ENABLED)' : '(DISABLED)'}`);
+    console.log(`OBS control mode: ${OBS_CONTROL_MODE}${shouldUseObsWebSocketControl() ? ' (WebSocket preferred)' : ' (Webhook only)'}`);
+    console.log(`OBS WS target: ${getObsWsUrl() || 'DISABLED (set OBS_WS_HOST)'}`);
+    console.log(`OBS webhook: ${getObsWebhookUrl() || 'DISABLED (set OBS_WEBHOOK_IP)'}`);
+    console.log(`OBS stop-after-no-flow: ${OBS_NO_FLOW_STOP_MS}ms`);
     console.log('');
     console.log(`Overlay URL: http://localhost:${PORT}`);
     console.log(`Admin page: http://localhost:${PORT}/admin`);
@@ -712,12 +1069,14 @@ server.listen(PORT, '0.0.0.0', () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('SIGTERM received, ending session and shutting down...');
+    clearObsNoFlowStopTimer('shutdown');
     endSession();
     process.exit(0);
 });
 
 process.on('SIGINT', () => {
     console.log('SIGINT received, ending session and shutting down...');
+    clearObsNoFlowStopTimer('shutdown');
     endSession();
     process.exit(0);
 });

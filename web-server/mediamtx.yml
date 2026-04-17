@@ -24,7 +24,14 @@ externalAuthenticationURL: http://localhost:5000/rtmp/auth
 
 paths:
   # Phone publishes to: rtmp://host:1935/live/<stream-key>
+  # (also accepts legacy publish path: rtmp://host:1935/publish/<stream-key>)
   # OBS pulls from:     rtsp://host:8554/live/<stream-key>
   #                  or rtmp://host:1935/live/<stream-key>
-  # TODO: add runOnPublish/runOnUnpublish hooks for telemetry sync once field names confirmed for this MediaMTX version
-  ~^live/.*$:
+  ~^(live|publish)/.*$:
+    # MediaMTX v1.9.x lifecycle hooks:
+    # runOnReady = first reader-ready media flow starts
+    # runOnNotReady = media flow stops
+    runOnReady: >-
+      curl -sS --max-time 2 -X POST "http://localhost:5000/rtmp/on_publish?name=$MTX_PATH"
+    runOnNotReady: >-
+      curl -sS --max-time 2 -X POST "http://localhost:5000/rtmp/on_publish_done?name=$MTX_PATH"

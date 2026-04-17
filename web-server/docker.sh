@@ -12,6 +12,11 @@ NETWORK=""
 DEBUG_FLAG=""
 VIDEO_DELAY=""
 STREAM_KEY=""
+OBS_WEBHOOK_IP=""
+OBS_CONTROL_MODE=""
+OBS_WS_HOST=""
+OBS_WS_PORT=""
+OBS_WS_PASSWORD=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -41,6 +46,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --stream-key)
             STREAM_KEY="-e STREAM_KEY=$2"
+            shift 2
+            ;;
+        --obs-webhook-ip)
+            OBS_WEBHOOK_IP="-e OBS_WEBHOOK_IP=$2"
+            shift 2
+            ;;
+        --obs-control-mode)
+            OBS_CONTROL_MODE="-e OBS_CONTROL_MODE=$2"
+            shift 2
+            ;;
+        --obs-ws-host)
+            OBS_WS_HOST="-e OBS_WS_HOST=$2"
+            shift 2
+            ;;
+        --obs-ws-port)
+            OBS_WS_PORT="-e OBS_WS_PORT=$2"
+            shift 2
+            ;;
+        --obs-ws-password)
+            OBS_WS_PASSWORD="-e OBS_WS_PASSWORD=$2"
             shift 2
             ;;
         daemon|stop|restart|start|log|build|smoke-rtmp)
@@ -183,6 +208,36 @@ start_container() {
         print_info "Stream key: ${KEY_VALUE}"
     else
         print_warning "Using default stream key (change with --stream-key for security!)"
+    fi
+
+    # Add OBS webhook IP if specified
+    if [ -n "$OBS_WEBHOOK_IP" ]; then
+        DOCKER_CMD="$DOCKER_CMD $OBS_WEBHOOK_IP"
+        OBS_WEBHOOK_IP_VALUE=$(echo $OBS_WEBHOOK_IP | sed 's/.*OBS_WEBHOOK_IP=//')
+        print_info "OBS webhook IP: ${OBS_WEBHOOK_IP_VALUE}"
+    fi
+
+    if [ -n "$OBS_CONTROL_MODE" ]; then
+        DOCKER_CMD="$DOCKER_CMD $OBS_CONTROL_MODE"
+        OBS_CONTROL_MODE_VALUE=$(echo $OBS_CONTROL_MODE | sed 's/.*OBS_CONTROL_MODE=//')
+        print_info "OBS control mode: ${OBS_CONTROL_MODE_VALUE}"
+    fi
+
+    if [ -n "$OBS_WS_HOST" ]; then
+        DOCKER_CMD="$DOCKER_CMD $OBS_WS_HOST"
+        OBS_WS_HOST_VALUE=$(echo $OBS_WS_HOST | sed 's/.*OBS_WS_HOST=//')
+        print_info "OBS WS host: ${OBS_WS_HOST_VALUE}"
+    fi
+
+    if [ -n "$OBS_WS_PORT" ]; then
+        DOCKER_CMD="$DOCKER_CMD $OBS_WS_PORT"
+        OBS_WS_PORT_VALUE=$(echo $OBS_WS_PORT | sed 's/.*OBS_WS_PORT=//')
+        print_info "OBS WS port: ${OBS_WS_PORT_VALUE}"
+    fi
+
+    if [ -n "$OBS_WS_PASSWORD" ]; then
+        DOCKER_CMD="$DOCKER_CMD $OBS_WS_PASSWORD"
+        print_info "OBS WS password: [SET]"
     fi
 
     # Add volume mounts
@@ -379,6 +434,11 @@ case $COMMAND in
         echo "  --debug              - Enable debug mode"
         echo "  --delay MILLISECONDS - Video delay in ms"
         echo "  --stream-key KEY     - Set stream key for authentication (default: racebox-default-key)"
+        echo "  --obs-webhook-ip IP  - Send OBS start/stop webhooks to this host"
+        echo "  --obs-control-mode M - OBS control mode: auto|ws|webhook"
+        echo "  --obs-ws-host HOST   - OBS WebSocket host/IP for direct control"
+        echo "  --obs-ws-port PORT   - OBS WebSocket port (default: 4455)"
+        echo "  --obs-ws-password PW - OBS WebSocket password"
         echo ""
         echo "Ports:"
         echo "  5000 - Web server (overlay + telemetry API + WebSocket)"
@@ -396,6 +456,8 @@ case $COMMAND in
         echo "  $0 -p 8080 daemon                      # Start with web server on port 8080"
         echo "  $0 --debug daemon                      # Start with debug logging"
         echo "  $0 --stream-key mySecretKey123 daemon  # Start with custom stream key"
+        echo "  $0 --obs-webhook-ip 192.168.1.50 daemon # Enable OBS start/stop webhook calls"
+        echo "  $0 --obs-control-mode ws --obs-ws-host 192.168.1.50 --obs-ws-port 4455 --obs-ws-password 'secret' daemon"
         echo "  $0 --network host daemon               # Start with host networking"
         echo "  $0 log                                 # View logs"
         echo "  $0 smoke-rtmp                          # Verify RTMP publish → RTSP pull"

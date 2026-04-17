@@ -79,6 +79,12 @@ PORT=8080 npm start
 # Start with all custom options
 ./docker.sh --stream-key "myKey" --delay 2000 --debug daemon
 
+# Start with OBS webhook target (sends start on flow start, stop after 3m no flow)
+./docker.sh --stream-key "myKey" --obs-webhook-ip 192.168.1.50 daemon
+
+# Start with direct OBS WebSocket control (recommended)
+./docker.sh --stream-key "myKey" --obs-control-mode ws --obs-ws-host 192.168.1.50 --obs-ws-port 4455 --obs-ws-password "yourObsPassword" daemon
+
 # Start with host networking
 ./docker.sh --network host daemon
 
@@ -94,6 +100,19 @@ PORT=8080 npm start
 # Build Docker image
 ./docker.sh build
 ```
+
+### docker.sh Options
+
+- `-p, --port <PORT>` - Override web server port (default: `5000`)
+- `--network <NETWORK>` - Use specific Docker network (for example `host`)
+- `--debug` - Enable debug mode
+- `--delay <MILLISECONDS>` - Set `VIDEO_DELAY_MS`
+- `--stream-key <KEY>` - Set RTMP stream key
+- `--obs-webhook-ip <IP_OR_HOST>` - OBS webhook target host
+- `--obs-control-mode <auto|ws|webhook>` - OBS control transport selection
+- `--obs-ws-host <HOST>` - OBS WebSocket host/IP for direct control
+- `--obs-ws-port <PORT>` - OBS WebSocket port (default: `4455`)
+- `--obs-ws-password <PASSWORD>` - OBS WebSocket password
 
 ## RTMP Streaming Setup
 
@@ -480,15 +499,24 @@ Typical delays:
 - `SEND_FREQUENCY_HZ` - Android app send frequency (default: 10 Hz)
 - `MAX_G_RESET_INTERVAL_MIN` - Max G-force auto-reset interval in minutes (default: 5)
 - `STREAM_KEY` - RTMP stream key for authentication (default: racebox-default-key)
+- `OBS_WEBHOOK_IP` - Host/IP to receive OBS control webhooks (default: disabled)
+- `OBS_WEBHOOK_PROTOCOL` - Protocol for OBS webhook URL (default: http)
+- `OBS_WEBHOOK_PORT` - Optional port for OBS webhook URL (default: none)
+- `OBS_WEBHOOK_PATH` - Path for OBS webhook URL (default: /webhook/obs)
+- `OBS_NO_FLOW_STOP_MS` - Delay before stop webhook after no stream flow (default: 180000 / 3 minutes)
+- `OBS_CONTROL_MODE` - OBS control mode: `auto`, `ws`, or `webhook` (default: `auto`)
+- `OBS_WS_HOST` - OBS WebSocket host/IP for direct control (default: unset)
+- `OBS_WS_PORT` - OBS WebSocket port (default: 4455)
+- `OBS_WS_PASSWORD` - OBS WebSocket password
 
 **Set via Docker:**
 ```bash
-./docker.sh --stream-key "myKey" --delay 2000 daemon
+./docker.sh --stream-key "myKey" --delay 2000 --obs-control-mode ws --obs-ws-host 192.168.1.50 --obs-ws-port 4455 --obs-ws-password "yourObsPassword" daemon
 ```
 
 **Set via environment:**
 ```bash
-PORT=8080 STREAM_KEY="myKey" DEBUG=true npm start
+PORT=8080 STREAM_KEY="myKey" OBS_CONTROL_MODE=ws OBS_WS_HOST="192.168.1.50" OBS_WS_PORT=4455 OBS_WS_PASSWORD="yourObsPassword" DEBUG=true npm start
 ```
 
 ## Android App Configuration
