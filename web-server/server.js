@@ -18,6 +18,7 @@ let SEND_FREQUENCY_HZ = parseInt(process.env.SEND_FREQUENCY_HZ) || 10; // Defaul
 let MAX_G_RESET_INTERVAL_MIN = parseInt(process.env.MAX_G_RESET_INTERVAL_MIN) || 5; // Default 5 minutes
 const STREAM_KEY = process.env.STREAM_KEY || 'racebox-default-key'; // Change this for security!
 const SYNC_LOG_INTERVAL_MS = parseInt(process.env.SYNC_LOG_INTERVAL_MS) || 0; // 0 disables periodic sync logs
+const SESSION_TIMEOUT = Math.max(10000, parseInt(process.env.SESSION_TIMEOUT_MS) || 300000);
 let OBS_WEBHOOK_IP = (process.env.OBS_WEBHOOK_IP || '').trim(); // Example: 192.168.1.50
 const OBS_WEBHOOK_PROTOCOL = (process.env.OBS_WEBHOOK_PROTOCOL || 'http').trim();
 const OBS_WEBHOOK_PORT = parseInt(process.env.OBS_WEBHOOK_PORT);
@@ -112,16 +113,8 @@ function broadcastTelemetry(data) {
         log('No WebSocket clients connected - data not broadcasted');
         return;
     }
-
-    const message = JSON.stringify({ type: 'telemetry', data });
-    let sentCount = 0;
-    wsClients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
-            sentCount++;
-        }
-    });
-    log(`Broadcasted telemetry to ${sentCount}/${wsClients.size} clients`);
+    log(`Broadcasted telemetry to ${wsClients.size} clients`);
+    broadcastMessage({ type: 'telemetry', data });
 }
 
 // Broadcast config update to all connected WebSocket clients
@@ -151,7 +144,6 @@ function broadcastConfig() {
 // Session management
 let currentSession = null;
 let sessionData = [];
-const SESSION_TIMEOUT = 300000; // 5 minutes of inactivity ends session
 let sessionTimer = null;
 
 // Track stream start in Node memory so startSession() doesn't race against the fire-and-forget to nginx
@@ -228,6 +220,12 @@ function shouldUseObsWebSocketControl() {
     return Boolean(OBS_WS_HOST);
 }
 
+function resetObsWsClient() {
+    obsWsConnected = false;
+    obsWsClient = null;
+    obsWsConnectPromise = null;
+}
+
 function initObsWsClient() {
     if (obsWsUnavailable) {
         return false;
@@ -243,12 +241,12 @@ function initObsWsClient() {
 
         if (typeof obsWsClient.on === 'function') {
             obsWsClient.on('ConnectionClosed', () => {
-                obsWsConnected = false;
                 console.warn('[OBS WS] Connection closed');
+                resetObsWsClient();
             });
             obsWsClient.on('ConnectionError', (error) => {
-                obsWsConnected = false;
                 console.warn('[OBS WS] Connection error:', error?.message || String(error));
+                resetObsWsClient();
             });
         }
 
@@ -283,8 +281,9 @@ async function ensureObsWsConnected() {
             console.log('[OBS WS] Connected');
             return true;
         } catch (error) {
-            obsWsConnected = false;
             console.warn('[OBS WS] Connect failed:', error?.message || String(error));
+            // Full reset so next attempt gets a clean client instance
+            resetObsWsClient();
             return false;
         } finally {
             obsWsConnectPromise = null;
@@ -325,29 +324,30 @@ async function sendObsWebSocketCommand(action) {
         return false;
     }
 
-    const connected = await ensureObsWsConnected();
-    if (!connected) {
-        return false;
-    }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const connected = await ensureObsWsConnected();
+        if (!connected) {
+            return false;
+        }
 
-    try {
-        console.log(`[OBS WS] Sending '${requestType}' to ${wsUrl}`);
-        await obsWsClient.call(requestType);
-        console.log(`[OBS WS] '${requestType}' sent successfully`);
-        return true;
-    } catch (error) {
-        const msg = error?.message || String(error);
-        if (isExpectedObsStateError(action, msg)) {
-            console.log(`[OBS WS] '${requestType}' ignored (${msg})`);
+        try {
+            console.log(`[OBS WS] Sending '${requestType}' to ${wsUrl}` + (attempt > 1 ? ` (attempt ${attempt})` : ''));
+            await obsWsClient.call(requestType);
+            console.log(`[OBS WS] '${requestType}' sent successfully`);
             return true;
+        } catch (error) {
+            const msg = error?.message || String(error);
+            if (isExpectedObsStateError(action, msg)) {
+                console.log(`[OBS WS] '${requestType}' ignored (${msg})`);
+                return true;
+            }
+            console.warn(`[OBS WS] '${requestType}' error: ${msg}`);
+            // Reset client so next attempt (or next call) gets a fresh connection
+            resetObsWsClient();
         }
-
-        if (/not connected|socket|closed|identify/i.test(msg)) {
-            obsWsConnected = false;
-        }
-        console.warn(`[OBS WS] '${requestType}' error: ${msg}`);
-        return false;
     }
+
+    return false;
 }
 
 async function sendObsWebhook(action, extraPayload = {}) {
@@ -370,7 +370,7 @@ async function sendObsWebhook(action, extraPayload = {}) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
-            timeout: 5000
+            signal: AbortSignal.timeout(5000)
         });
 
         if (!response.ok) {
@@ -423,7 +423,7 @@ function scheduleObsNoFlowStopWebhook(reason) {
 }
 
 // Start a new telemetry session
-async function startSession() {
+function startSession() {
     if (!currentSession) {
         currentSession = {
             id: uuidv4(),
@@ -466,42 +466,35 @@ function endSession() {
         log('Session ID:', currentSession.id);
         log('Data points collected:', sessionData.length);
 
+        const now_ms = Date.now();
         const sessionInfo = {
             ...currentSession,
-            endTime: new Date().toISOString(),
-            duration: Date.now() - new Date(currentSession.startTime).getTime(),
+            endTime: new Date(now_ms).toISOString(),
+            duration: now_ms - currentSession.startTime_unix_ms,
             dataPoints: sessionData.length
         };
 
         log('Session duration:', sessionInfo.duration, 'ms');
 
-        // Save to archive
-        const date = new Date();
+        // Snapshot and clear immediately so new data can start accumulating
+        const snapshot = { session: sessionInfo, data: sessionData };
+        currentSession = null;
+        sessionData = [];
+
+        // Save to archive async — does not block the event loop
+        const date = new Date(now_ms);
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
         const day = String(date.getDate()).padStart(2, '0');
-
         const archiveDir = path.join(__dirname, 'archive', String(year), month);
-
-        if (!fs.existsSync(archiveDir)) {
-            log('Creating archive directory:', archiveDir);
-            fs.mkdirSync(archiveDir, { recursive: true });
-        }
-
-        const filename = `${year}-${month}-${day}_${currentSession.id}.json`;
+        const filename = `${year}-${month}-${day}_${sessionInfo.id}.json`;
         const filepath = path.join(archiveDir, filename);
 
-        const archiveData = {
-            session: sessionInfo,
-            data: sessionData
-        };
+        fs.promises.mkdir(archiveDir, { recursive: true })
+            .then(() => fs.promises.writeFile(filepath, JSON.stringify(snapshot, null, 2)))
+            .then(() => console.log('✓ Session saved to archive'))
+            .catch(err => console.warn('✗ Failed to save session archive:', err.message));
 
-        log('Saving session to:', filepath);
-        fs.writeFileSync(filepath, JSON.stringify(archiveData, null, 2));
-        console.log('✓ Session saved to archive');
-
-        currentSession = null;
-        sessionData = [];
     } else if (currentSession) {
         log('Session has no data, not archiving');
         currentSession = null;
@@ -548,7 +541,7 @@ app.post('/telemetry', async (req, res) => {
     broadcastTelemetry(latestTelemetry);
 
     // Session management
-    await startSession();
+    startSession();
 
     if (SYNC_LOG_INTERVAL_MS > 0 && receivedAt_ms - lastSyncLogAt_ms >= SYNC_LOG_INTERVAL_MS) {
         logSyncSnapshot('telemetry-interval');
@@ -570,6 +563,11 @@ app.post('/telemetry', async (req, res) => {
         } catch (error) {
             log('Could not detect clock offset:', error.message);
         }
+    }
+
+    if (!currentSession) {
+        console.warn('[TELEMETRY] No active session after startSession() — dropping data point');
+        return res.json({ status: 'ok' });
     }
 
     currentSession.dataPoints++;
@@ -743,7 +741,7 @@ app.post('/config', (req, res) => {
         }
 
         OBS_WS_HOST = obs_ws_host.trim();
-        obsWsConnected = false;
+        resetObsWsClient();
         response.obs_ws_host = OBS_WS_HOST || null;
         console.log(`OBS WS host ${OBS_WS_HOST ? `updated to ${OBS_WS_HOST}` : 'disabled'}`);
         updated = true;
@@ -759,7 +757,7 @@ app.post('/config', (req, res) => {
         }
 
         OBS_WS_PORT = newPort;
-        obsWsConnected = false;
+        resetObsWsClient();
         response.obs_ws_port = OBS_WS_PORT;
         console.log(`OBS WS port updated to ${OBS_WS_PORT}`);
         updated = true;
@@ -802,10 +800,9 @@ function handleRtmpStreamStart(streamName, timestamp_ms) {
         log('Updated session with RTMP start time');
     }
 
-    void dispatchObsControl('start_stream', {
-        stream_name: streamName
-    });
-    console.log(`[OBS CONTROL] Requested OBS stream start for '${streamName}'`);
+    console.log(`[OBS CONTROL] Requesting OBS stream start for '${streamName}'`);
+    dispatchObsControl('start_stream', { stream_name: streamName })
+        .catch(err => console.warn('[OBS CONTROL] dispatchObsControl error:', err?.message || String(err)));
 
     logSyncSnapshot('rtmp-start');
 }
@@ -1043,7 +1040,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('='.repeat(60));
     console.log(`Port: ${PORT}`);
     console.log(`Debug mode: ${DEBUG ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`Session timeout: ${SESSION_TIMEOUT / 1000}s`);
+    console.log(`Session timeout: ${SESSION_TIMEOUT / 1000}s (SESSION_TIMEOUT_MS)`);
     console.log(`WebSocket: ENABLED`);
     console.log(`Video delay: ${VIDEO_DELAY_MS}ms`);
     console.log(`Stream key: ${'*'.repeat(Math.max(0, STREAM_KEY.length - 4))}${STREAM_KEY.slice(-4)}`);
