@@ -175,7 +175,7 @@ start_container() {
     fi
 
     print_info "Starting container: $CONTAINER_NAME"
-    print_info "Port mapping: Web $PORT:5000, RTMP 1935:1935, RTSP 8554:8554"
+    print_info "Port mapping: Web $PORT:5000, RTMP 1935:1935, RTSP 8554:8554, SRT 8890:8890/udp"
 
     # Build docker run command
     DOCKER_CMD="docker run -d --name $CONTAINER_NAME"
@@ -185,7 +185,7 @@ start_container() {
         DOCKER_CMD="$DOCKER_CMD --network $NETWORK"
         print_info "Using network: $NETWORK"
     else
-        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000 -p 1935:1935 -p 8554:8554"
+        DOCKER_CMD="$DOCKER_CMD -p $PORT:5000 -p 1935:1935 -p 8554:8554 -p 8890:8890/udp"
     fi
 
     # Add debug flag if specified
@@ -444,6 +444,7 @@ case $COMMAND in
         echo "  5000 - Web server (overlay + telemetry API + WebSocket)"
         echo "  1935 - RTMP (phone publishes here)"
         echo "  8554 - RTSP (OBS pulls from here — preferred)"
+        echo "  8890 - SRT UDP (phone publishes here)"
         echo "  9997 - MediaMTX REST API (internal)"
         echo ""
         echo "Stream Setup:"
