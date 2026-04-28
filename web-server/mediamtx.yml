@@ -13,7 +13,7 @@ apiAddress: :9997
 # Enabled protocols
 rtmp: yes
 rtsp: yes   # OBS pulls via RTSP
-srt: no     # Enable later if needed
+srt: yes
 hls: no
 webrtc: no
 api: yes    # MediaMTX REST API on port 9997
